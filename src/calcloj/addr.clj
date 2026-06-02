@@ -5,8 +5,7 @@
 
    Two id spaces:
    - address string \"AAB1234\"  (canonical: signal/spin id, user-facing)
-   - 0-based [col-idx row-idx]   (grid geometry / viewport math)"
-  (:require [clojure.string :as str]))
+   - 0-based [col-idx row-idx]   (grid geometry / viewport math)")
 
 (defn col->idx
   "Column letters -> 0-based index. \"A\"->0, \"Z\"->25, \"AA\"->26."
