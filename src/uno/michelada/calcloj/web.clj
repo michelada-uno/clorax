@@ -1,4 +1,4 @@
-(ns calcloj.web
+(ns uno.michelada.calcloj.web
   "Windowed spreadsheet grid over the sheet engine, driven by Datastar.
 
    Viewport: a scroll container holds a full-size spacer (real scrollbar for a
@@ -16,11 +16,12 @@
             [org.httpkit.server :as http]
             [hiccup2.core :as h]
             [jsonista.core :as json]
-            [calcloj.addr :as addr]
-            [calcloj.sheet :as sheet]
-            [calcloj.store :as store]
+            [uno.michelada.calcloj.addr :as addr]
+            [uno.michelada.calcloj.sheet :as sheet]
+            [uno.michelada.calcloj.store :as store]
             [starfederation.datastar.clojure.api :as d*]
-            [starfederation.datastar.clojure.adapter.http-kit :as hk]))
+            [starfederation.datastar.clojure.adapter.http-kit :as hk])
+  (:gen-class))
 
 ;; --- geometry -----------------------------------------------------------
 

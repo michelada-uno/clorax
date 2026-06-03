@@ -1,4 +1,4 @@
-(ns calcloj.runtime
+(ns uno.michelada.calcloj.runtime
   "Runtime support referenced by compiled cell bodies, resolving against the
    CURRENT execution context's metadata (works on executor threads).
 

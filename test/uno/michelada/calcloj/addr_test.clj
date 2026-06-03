@@ -1,6 +1,6 @@
-(ns calcloj.addr-test
+(ns uno.michelada.calcloj.addr-test
   (:require [clojure.test :refer [deftest testing is are]]
-            [calcloj.addr :as a]))
+            [uno.michelada.calcloj.addr :as a]))
 
 (deftest col-idx-roundtrip
   (are [col idx] (and (= idx (a/col->idx col)) (= col (a/idx->col idx)))

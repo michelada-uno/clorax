@@ -44,7 +44,16 @@ clojure -M:web         # server on http://localhost:8080  (open ?s=<sheet-id>)
 clojure -X:test        # engine + addr + store suites
 clojure -M:spike       # Step-0 lifecycle spike (and :spike0b, plus spike4.clj)
 node --check resources/public/app.js
+
+clojure -T:build uber             # runnable uberjar -> target/calcloj-<v>.jar
+java -jar target/calcloj-<v>.jar  # run the built artifact (serves :8080)
 ```
+
+Namespaces are rooted at `uno.michelada.calcloj.*` under
+`src/uno/michelada/calcloj/`. Coordinate `uno.michelada/calcloj`; repo lives in
+the `michelada-uno` GitHub org. **Releases are GitHub-only (no Clojars)**: push a
+`v*` tag and `.github/workflows/release.yml` tests, builds the uberjar, and
+attaches it to a GitHub Release. See SPEC.md "Build & release".
 
 ### Browser verification (important, and harness-specific)
 

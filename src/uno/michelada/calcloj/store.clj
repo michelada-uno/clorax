@@ -1,4 +1,4 @@
-(ns calcloj.store
+(ns uno.michelada.calcloj.store
   "Sheet persistence — saves the SOURCE document (not the Spindel graph), one
    EDN file per sheet id under data/. Behind save!/load/exists?, so the backend
    can become Datahike/SQL later without touching callers.
@@ -6,7 +6,7 @@
    Multi-tenancy: ids namespace sheets (e.g. \"tenant__sheet\"); add auth later."
   (:require [clojure.java.io :as io]
             [clojure.edn :as edn]
-            [calcloj.sheet :as sheet]))
+            [uno.michelada.calcloj.sheet :as sheet]))
 
 (def ^:private dir "data")
 (def ^:private fmt 1)

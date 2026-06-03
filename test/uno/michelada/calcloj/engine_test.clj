@@ -1,7 +1,7 @@
-(ns calcloj.engine-test
+(ns uno.michelada.calcloj.engine-test
   "Engine behavior, no UI. Values, chains, ranges, errors, structural rebuild."
   (:require [clojure.test :refer [deftest testing is]]
-            [calcloj.sheet :as sh]))
+            [uno.michelada.calcloj.sheet :as sh]))
 
 (defn- mk [] (sh/create-sheet))
 (defn- put [s a raw] (sh/set-cell! s a raw))

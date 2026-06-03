@@ -1,8 +1,8 @@
-(ns calcloj.store-test
+(ns uno.michelada.calcloj.store-test
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.java.io :as io]
-            [calcloj.sheet :as sheet]
-            [calcloj.store :as store]))
+            [uno.michelada.calcloj.sheet :as sheet]
+            [uno.michelada.calcloj.store :as store]))
 
 (def ^:private id "test_roundtrip")
 

@@ -1,0 +1,63 @@
+name: release
+
+# Tag-driven release. Push a tag like `v1.2.3` to: run tests, build a runnable
+# uberjar, and publish a GitHub Release with the jar attached.
+#
+#   git tag v1.2.3 && git push origin v1.2.3
+#
+# No Clojars publishing — calcloj is a runnable app, distributed as the uberjar
+# on the GitHub Release.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write          # needed to create the release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Clojure
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          cli: '1.12.0.1488'
+
+      - name: Cache Clojure deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+            ~/.deps.clj
+          key: cljdeps-${{ hashFiles('deps.edn') }}
+          restore-keys: cljdeps-
+
+      - name: Derive version from tag
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: clojure -X:test
+
+      - name: Build uberjar
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: clojure -T:build uber
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/calcloj-${{ steps.ver.outputs.version }}.jar
+          generate_release_notes: true
+          fail_on_unmatched_files: true
