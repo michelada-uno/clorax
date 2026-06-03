@@ -28,3 +28,17 @@ This removes the row cap entirely and makes the cap purely a coordinate clamp.
   lock serializes server side, but simultaneous async posts arrive unordered).
 - No config system yet — grid bounds, geometry are `def` constants. Fold into
   per-sheet settings once persistence lands.
+
+## Sessions — sheet lifecycle + per-session position
+
+`sheets*` loads sheets on demand but never unloads them; an execution context
+lives forever once touched. Also viewport `view*`/`dims*` are global (one active
+view), so two sessions on the same sheet fight over scroll position.
+
+Once user sessions exist:
+- ref-count sheets by active session; **unload** (close the execution context,
+  drop from `sheets*`) when no session references a sheet. Save before unload.
+- store **viewport position per session key**, not globally.
+- hook **session start / close** to acquire/release sheet refs. Datastar's
+  official SDK exposes connection lifecycle (SSE open/close) we can use to drive
+  this — release on disconnect.

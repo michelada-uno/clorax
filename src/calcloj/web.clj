@@ -18,7 +18,9 @@
             [jsonista.core :as json]
             [calcloj.addr :as addr]
             [calcloj.sheet :as sheet]
-            [calcloj.store :as store]))
+            [calcloj.store :as store]
+            [starfederation.datastar.clojure.api :as d*]
+            [starfederation.datastar.clojure.adapter.http-kit :as hk]))
 
 ;; --- geometry -----------------------------------------------------------
 
@@ -204,34 +206,26 @@
              :style "height:78vh;overflow:auto;border:1px solid #ccc;position:relative;"}
        (grid-layers sh)]]])))
 
-;; --- SSE ----------------------------------------------------------------
+;; --- SSE (official Datastar SDK) ----------------------------------------
 
-(defn- patch-outer [html-strs]
-  (str "event: datastar-patch-elements\n"
-       "data: mode outer\n"
-       (apply str (map #(str "data: elements " % "\n") html-strs))
-       "\n"))
+(defn- sse
+  "One-shot SSE response: open, run f with the generator, close. f does the
+   patch-elements!/patch-signals! calls."
+  [req f]
+  (hk/->sse-response req {hk/on-open (fn [gen] (f gen) (d*/close-sse! gen))}))
 
-(defn- patch-inner [selector html]
-  (str "event: datastar-patch-elements\n"
-       "data: mode inner\n"
-       "data: selector " selector "\n"
-       "data: elements " html "\n\n"))
+(defn- patch-inner!
+  "Replace inner HTML of `selector` with `html`."
+  [gen selector html]
+  (d*/patch-elements! gen html {d*/selector selector d*/patch-mode d*/pm-inner}))
 
-(defn- signals-event [m]
-  (str "event: datastar-patch-signals\n"
-       "data: signals " (json/write-value-as-string m) "\n\n"))
-
-(defn- sse-response [body]
-  {:status 200
-   :headers {"Content-Type" "text/event-stream" "Cache-Control" "no-cache"}
-   :body body})
+(defn- signals! [gen m]
+  (d*/patch-signals! gen (json/write-value-as-string m)))
 
 ;; --- handlers -----------------------------------------------------------
 
-(defn- read-json [req]
-  (when-let [b (:body req)]
-    (json/read-value (slurp b) json/keyword-keys-object-mapper)))
+(defn- read-signals [req]
+  (json/read-value (d*/get-signals req) json/keyword-keys-object-mapper))
 
 (def ^:private edit-lock (Object.))
 
@@ -246,48 +240,50 @@
       :else m)))
 
 (defn- handle-cell [req]
-  (let [{:keys [cell v sheet]} (read-json req)
+  (let [{:keys [cell v sheet]} (read-signals req)
         sid (if (store/valid-id? sheet) sheet "default")
         sh  (sheet-for sid)]
-    (if (addr/valid? cell)
-      (locking edit-lock
-        (try
-          (sheet/set-cell! sh cell (str v))
-          (sheet/settle! sh)
-          (store/save! sid sh)                    ; autosave (source document)
-          (let [affected (cons cell (sort (sheet/dependents* sh cell)))
-                visible  (filter in-window? affected)   ; only patch on-screen
-                errs (keep (fn [a]
-                             (when-let [e (:error (sheet/value sh a))]
-                               (str a ": " (pretty-err e))))
-                           affected)]
-            (sse-response
-             (str (when (seq visible)
-                    (patch-outer (map #(str (h/html (cell-input sh %
-                                                                (:ci (addr/parse %))
-                                                                (:ri (addr/parse %)))))
-                                      visible)))
-                  (signals-event {:err (if (seq errs) (str/join "; " errs) "")}))))
-          (catch Throwable e
-            (sse-response (signals-event {:err (str cell ": " (pretty-err (.getMessage e)))})))))
-      (sse-response "\n"))))
+    (sse req
+      (fn [gen]
+        (when (addr/valid? cell)
+          (locking edit-lock
+            (try
+              (sheet/set-cell! sh cell (str v))
+              (sheet/settle! sh)
+              (store/save! sid sh)                    ; autosave (source document)
+              (let [affected (cons cell (sort (sheet/dependents* sh cell)))
+                    visible  (filter in-window? affected)   ; only patch on-screen
+                    errs (keep (fn [a]
+                                 (when-let [e (:error (sheet/value sh a))]
+                                   (str a ": " (pretty-err e))))
+                               affected)]
+                (when (seq visible)
+                  (d*/patch-elements!                  ; default mode outer: morph by id
+                   gen (apply str (map #(str (h/html (cell-input sh %
+                                                                 (:ci (addr/parse %))
+                                                                 (:ri (addr/parse %)))))
+                                       visible))))
+                (signals! gen {:err (if (seq errs) (str/join "; " errs) "")}))
+              (catch Throwable e
+                (signals! gen {:err (str cell ": " (pretty-err (.getMessage e)))})))))))))
 
 (defn- handle-view [req]
-  (let [{:keys [r0 c0 sheet]} (read-json req)
+  (let [{:keys [r0 c0 sheet]} (read-signals req)
         sh (sheet-for (if (store/valid-id? sheet) sheet "default"))
         r0 (max 0 (long (or r0 0)))
         c0 (max 0 (long (or c0 0)))]
     (reset! view* {:r0 r0 :c0 c0})
-    (if (= @dims* (spacer-dims sh r0 c0))
-      ;; bounds unchanged: cheap inner patch of window + headers
-      (let [[cis ris] (window r0 c0)]
-        (sse-response
-         (str (patch-inner "#cells"   (cells-html sh cis ris))
-              (patch-inner "#colhead" (colhead-html cis))
-              (patch-inner "#rowhead" (rowhead-html ris)))))
-      ;; bounds grew (reached edge / jumped): re-render grid (resizes spacer).
-      ;; #scroll element + its delegated handlers persist.
-      (sse-response (patch-inner "#scroll" (str (grid-layers sh)))))))
+    (sse req
+      (fn [gen]
+        (if (= @dims* (spacer-dims sh r0 c0))
+          ;; bounds unchanged: cheap inner patch of window + headers
+          (let [[cis ris] (window r0 c0)]
+            (patch-inner! gen "#cells"   (cells-html sh cis ris))
+            (patch-inner! gen "#colhead" (colhead-html cis))
+            (patch-inner! gen "#rowhead" (rowhead-html ris)))
+          ;; bounds grew (reached edge / jumped): re-render grid (resizes spacer).
+          ;; #scroll element + its delegated handlers persist.
+          (patch-inner! gen "#scroll" (str (grid-layers sh))))))))
 
 (defn- app [req]
   (case [(:request-method req) (:uri req)]

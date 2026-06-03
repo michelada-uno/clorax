@@ -13,6 +13,10 @@
 
         ;; Web stack — Datastar driven from JVM (no spindel /dom, that is cljs).
         http-kit/http-kit {:mvn/version "2.8.0"}
+
+        ;; Official Datastar Clojure SDK + http-kit adapter
+        dev.data-star.clojure/sdk {:mvn/version "1.0.0-RC10"}
+        dev.data-star.clojure/http-kit {:mvn/version "1.0.0-RC10"}
         ring/ring-core {:mvn/version "1.12.2"}
         metosin/reitit-ring {:mvn/version "0.7.2"}
         hiccup/hiccup {:mvn/version "2.0.0-RC3"}
