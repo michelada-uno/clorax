@@ -7,7 +7,7 @@ Read `SPEC.md` for the technical architecture. This file = how to work here.
 ## MCP servers usage
 
 - **Qdrant:** When available, use Qdrant MCP server (`mcp-server-qdrant`, 
-  `qdrant-local`, etc...) for persistent vector memory. When usong it, explicitly
+  `qdrant-local`, etc...) for persistent vector memory. When using it, explicitly
   use collection name `dev-calcloj`.
 
 ## Communication style

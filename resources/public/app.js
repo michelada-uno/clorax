@@ -31,6 +31,7 @@ function render() {
   // translate relative to the CONTENT base (cb,rb) -> always aligned to #cells
   const tx = m.cb * g.CW - SX, ty = m.rb * g.RH - SY;
   setT('cells', tx, ty);
+  setT('self', tx, ty);      // own selection/editing overlay tracks the cell layer
   setT('peers', tx, ty);     // collaborator overlay tracks the cell layer
   setT('colstrip', tx, 0);
   setT('rowstrip', 0, ty);
@@ -106,91 +107,18 @@ function jump(addr) {
   let ci = 0; for (const ch of m[1]) ci = ci * 26 + (ch.charCodeAt(0) - 64); ci -= 1;
   const ri = parseInt(m[2], 10) - 1;
   SX = ci * g.CW; SY = ri * g.RH;          // no clamp: /view extends totals to cover
-  selectCell(addr);
+  // selection + presence are server-rendered: $sel is already bound from the
+  // address box; nudge the server to move the #self overlay to it.
+  const pt = $('presencetrigger'); if (pt) pt.click();
   render(); requestView(true);
 }
 window.jump = jump;
 
-// --- selection highlight (decoupled from input focus) ----------------------
-// Two tiers, both client-only and re-applied after any #cells re-render (scroll,
-// edit, collaborator push) via a MutationObserver:
-//   .sel           -> the selected cell ("you are here"); stays highlighted even
-//                     when focus moves to the formula bar.
-//   .editing-local -> the cell being actively edited RIGHT NOW (its own input is
-//                     focused, or the formula bar editing it). Stronger style.
-let SELA = null;     // selected cell address
-let EDITA = null;    // cell being locally edited right now (or null)
-
-function paintSel() {
-  document.querySelectorAll('input.cell.sel').forEach(function (e) { e.classList.remove('sel'); });
-  if (SELA) { const e = $('c_' + SELA); if (e) e.classList.add('sel'); }
-}
-
-function paintEdit() {
-  document.querySelectorAll('input.cell.editing-local').forEach(function (e) { e.classList.remove('editing-local'); });
-  if (EDITA) { const e = $('c_' + EDITA); if (e) e.classList.add('editing-local'); }
-}
-
-function paintAll() { paintSel(); paintEdit(); }
-
-function setEditLocal(addr) { EDITA = addr; paintEdit(); }
-
-function selectCell(addr) {
-  if (addr === SELA) return;
-  SELA = addr;
-  paintSel();
-  sendPresence(addr, false);
-}
-
-// --- presence (collaborator cursors + edit locks) --------------------------
-// Tell the server where this user is and whether they are actively editing, so
-// peers can render a cursor and lock the cell. Plain fetch (not Datastar) so we
-// control exactly when it fires.
-let _lastEditing = null;
-
-function sendPresence(cell, editing) {
-  if (!window.__sid || !cell) return;
-  const sheet = ($('sheetbox') || {}).value || 'default';
-  fetch('/presence', {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
-    body: JSON.stringify({sid: window.__sid, sheet: sheet, cell: cell, editing: !!editing})
-  }).catch(function () {});
-}
-
-function initSelection() {
-  const v = $('viewport'); if (!v || v.__selInit) return;
-  v.__selInit = true;
-  // focusin a cell -> select it + mark it as the cell edited right now
-  v.addEventListener('focusin', function (e) {
-    if (e.target.classList && e.target.classList.contains('cell')) {
-      const a = e.target.id.slice(2);
-      selectCell(a); setEditLocal(a); _lastEditing = null;
-    }
-  });
-  // first keystroke in a cell -> mark editing (locks it for peers)
-  v.addEventListener('input', function (e) {
-    if (e.target.classList && e.target.classList.contains('cell')) {
-      const a = e.target.id.slice(2);
-      if (_lastEditing !== a) { _lastEditing = a; sendPresence(a, true); }
-    }
-  });
-  // leaving the cell -> stop editing (cursor stays where it is)
-  v.addEventListener('focusout', function (e) {
-    if (e.target.classList && e.target.classList.contains('cell')) {
-      _lastEditing = null; setEditLocal(null); sendPresence(e.target.id.slice(2), false);
-    }
-  });
-  // formula bar edits the SELECTED cell -> mirror the same editing tier + lock
-  const fbar = $('fbar');
-  if (fbar) {
-    fbar.addEventListener('focusin', function () { setEditLocal(SELA); });
-    fbar.addEventListener('input',   function () { if (SELA && _lastEditing !== SELA) { _lastEditing = SELA; sendPresence(SELA, true); } });
-    fbar.addEventListener('focusout', function () { const a = SELA; setEditLocal(null); _lastEditing = null; if (a) sendPresence(a, false); });
-  }
-  // re-apply both highlight tiers whenever #cells is re-rendered
-  const cells = $('cells');
-  if (cells) new MutationObserver(paintAll).observe(cells, {childList: true, subtree: true});
-}
+// Selection (#self) and collaborator (#peers) overlays are SERVER-RENDERED.
+// Cell focus/blur and the formula bar post presence declaratively via Datastar
+// (@post '/presence' in their data-on handlers); the server moves the overlays.
+// No client-side class toggling here — the only client concern is keeping the
+// overlay layers translated with #cells (handled in render()).
 
 function initScroll() {
   const v = $('viewport'); if (!v || v.__scrollInit) return;
@@ -199,7 +127,6 @@ function initScroll() {
   dragThumb('vbar', 'vthumb', true);
   dragThumb('hbar', 'hthumb', false);
   window.addEventListener('resize', render);
-  initSelection();
   render();  // page already rendered the window at (0,0)
 }
 

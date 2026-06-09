@@ -87,10 +87,13 @@ any real deployment.
 
 ## Presence & edit locking — follow-ups
 
-DONE: collaborator cursors + edit locks. Per-session :cursor/:editing broadcast
-to a #peers overlay; an editing peer's marker locks the cell (pointer-events +
-server-side locked-by-other? guard in /cell). Selection highlight decoupled from
-input focus (client .sel class, re-applied via MutationObserver).
+DONE: collaborator cursors + edit locks + selection — all SERVER-RENDERED as
+overlays (#self for the current user, #peers for others), no per-cell client JS.
+Per-session :cursor/:editing; presence posted declaratively via Datastar
+(@post '/presence' in cell + formula-bar data-on handlers). Editing marker locks
+the cell (pointer-events + server-side locked-by-other? guard in /cell).
+Selection persists off-focus (box stays on :cursor); editing tier = animated
+marching-ants border.
 
 REMAINING:
 - **Stuck lock on crash mid-edit**: if a client sets :editing and then crashes
@@ -98,8 +101,11 @@ REMAINING:
   sweep (30 min) reaps the session. Mitigations to consider: a short per-edit
   lock TTL (auto-expire :editing after N seconds of no refresh, with the client
   re-asserting while focused), or clearing :editing on stream death.
-- **Presence chattiness**: every focus/blur/first-keystroke POSTs /presence and
-  re-broadcasts the whole #peers overlay to all sessions. Fine at small scale;
-  debounce / diff if sessions-per-sheet grows.
+- **Selection latency**: the #self overlay moves on a server round-trip (presence
+  @post -> patch). Native input :focus masks it, but addrbox jumps show a small
+  lag. Fine; revisit only if it feels sluggish.
+- **Presence chattiness**: every focus/blur POSTs /presence and re-broadcasts the
+  whole #peers overlay to all sessions (and patches #self back). Fine at small
+  scale; debounce / diff if sessions-per-sheet grows.
 - **No name/identity**: peers are shown by color + "•"/"editing…" only (no user
   name). Add when there's an identity/auth layer.

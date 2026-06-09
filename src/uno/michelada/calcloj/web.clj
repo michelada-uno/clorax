@@ -246,13 +246,16 @@
      [:div {:id "viewport"
             :data-cw CW :data-rh RH :data-gut GUT :data-hdr HDR
             :data-over OVER :data-bar BAR
-            ;; delegated cell handlers (focus/blur don't bubble -> focusin/out)
+            ;; delegated cell handlers (focus/blur don't bubble -> focusin/out).
+            ;; Presence is posted declaratively (@post '/presence') — the server
+            ;; renders the selection (#self) and collaborator (#peers) overlays.
             :data-on:focusin
             (str "evt.target.classList.contains('cell') && "
                  "($sel=evt.target.id.slice(2), $bar=evt.target.dataset.raw, "
-                 "evt.target.value=evt.target.dataset.raw)")
+                 "evt.target.value=evt.target.dataset.raw, $edit=true, @post('/presence'))")
             :data-on:focusout
-            "evt.target.classList.contains('cell') && (evt.target.value=evt.target.dataset.val)"
+            (str "evt.target.classList.contains('cell') && "
+                 "(evt.target.value=evt.target.dataset.val, $edit=false, @post('/presence'))")
             :data-on:change
             (str "evt.target.classList.contains('cell') && "
                  "($cell=evt.target.id.slice(2), $v=evt.target.value, $bar=$v, @post('/cell'))")
@@ -278,6 +281,11 @@
                                            clip GUT HDR BAR BAR)}
        [:div {:id "cells" :style "position:absolute;left:0;top:0;will-change:transform;"}
         (h/raw (cells-html sh cis ris))]
+       ;; THIS user's own selection / editing marker — server-rendered from the
+       ;; session's :cursor/:editing (no per-cell client JS). pointer-events:none
+       ;; so it never blocks typing in the cell beneath. Translated with #cells.
+       [:div {:id "self" :style (str "position:absolute;left:0;top:0;z-index:2;"
+                                     "pointer-events:none;will-change:transform;")}]
        ;; collaborator cursors / edit-locks; translated with #cells by /app.js.
        ;; container ignores pointer events — only an editing marker re-enables
        ;; them to block the cell beneath.
@@ -306,15 +314,15 @@
                              "box-sizing:border-box;border:1px solid #ddd;"
                              "padding:2px 4px;font:13px monospace;}")
                         (- CW 1) (- RH 1))
-                ;; --- selection, editing, presence (literal %, so outside format)
-                ;; persistent selection ("you are here", independent of focus)
-                "input.cell.sel{outline:2px solid #7aa7f0;outline-offset:-2px;z-index:2;}"
-                ;; the cell being actively edited right now (its own input
-                ;; focused, or the formula bar) — animated 'marching ants'
-                ;; border (four gradient edges whose position scrolls) + a soft
-                ;; fill, so it clearly reads as live editing.
-                "input.cell.editing-local{border-color:transparent;z-index:3;"
-                "background-color:#eef4fe;"
+                ;; --- selection / editing OVERLAY (#self), server-rendered.
+                ;; literal % (gradients) -> kept outside the format call.
+                ;; calm "you are here" selection box
+                ".selfcell{position:absolute;box-sizing:border-box;pointer-events:none;"
+                "border:2px solid #7aa7f0;}"
+                ;; actively editing: animated 'marching ants' border (four gradient
+                ;; edges whose position scrolls). pointer-events stays none so the
+                ;; cell beneath is still typable.
+                ".selfcell.editing{border-color:transparent;"
                 "background-image:"
                 "linear-gradient(90deg,#1a73e8 50%,transparent 50%),"
                 "linear-gradient(90deg,#1a73e8 50%,transparent 50%),"
@@ -325,7 +333,7 @@
                 "background-position:0 0,0 100%,0 0,100% 0;"
                 "animation:cc-ants .6s infinite linear;}"
                 "@keyframes cc-ants{to{background-position:8px 0,-8px 100%,0 -8px,100% 8px;}}"
-                "@media(prefers-reduced-motion:reduce){input.cell.editing-local{animation:none;}}"
+                "@media(prefers-reduced-motion:reduce){.selfcell.editing{animation:none;}}"
                 ;; collaborator cursor overlays
                 ".peer{position:absolute;box-sizing:border-box;border:2px solid #888;border-radius:2px;}"
                 ".peer.editing{cursor:not-allowed;}"
@@ -334,7 +342,7 @@
                 "border-radius:3px 3px 3px 0;white-space:nowrap;}"))]
       [:script {:type "module" :src "/datastar.js"}]
       [:script {:src "/app.js"}]]
-     [:body {:data-signals (format "{cell:'', v:'', err:'', sel:'', bar:'', r0:0, c0:0, sheet:'%s', sid:''}" id)
+     [:body {:data-signals (format "{cell:'', v:'', err:'', sel:'', bar:'', edit:false, r0:0, c0:0, sheet:'%s', sid:''}" id)
              :style "font-family:sans-serif;margin:0;padding:.6rem;"}
       ;; hidden input carrying the session id into $sid, and a hidden trigger
       ;; /app.js clicks to open the persistent collaboration stream via Datastar
@@ -359,9 +367,12 @@
                 :data-on:keydown "evt.key==='Enter' && jump($sel)"
                 :style (str "width:5rem;font:13px monospace;padding:5px 6px;text-align:center;"
                             "border:1px solid #bbb;border-radius:4px;")}]
+       ;; editing via the formula bar still drives presence on the SELECTED cell
+       ;; (so it shows the marching-ants self marker and locks it for peers).
        [:input {:id "fbar" :data-bind:bar "" :placeholder "value or =formula"
+                :data-on:focus "$edit=true, @post('/presence')"
                 :data-on:keydown "evt.key==='Enter' && ($cell=$sel, $v=$bar, @post('/cell'))"
-                :data-on:blur "$cell=$sel, $v=$bar, @post('/cell')"
+                :data-on:blur "$cell=$sel, $v=$bar, @post('/cell'), $edit=false, @post('/presence')"
                 :style (str "flex:1;font:13px monospace;padding:5px 8px;border:1px solid #bbb;"
                             "border-radius:4px;")}]]
       ;; hidden r0/c0 carriers (/app.js sets these then clicks #viewtrigger so
@@ -369,6 +380,10 @@
       [:input {:id "r0box" :data-bind:r0 "" :style "display:none;"}]
       [:input {:id "c0box" :data-bind:c0 "" :style "display:none;"}]
       [:button {:id "viewtrigger" :data-on:click "@post('/view')" :style "display:none;"} ""]
+      ;; /app.js clicks this after a jump (address-box navigation) to post the new
+      ;; selection as presence — the server moves the #self overlay to it.
+      [:button {:id "presencetrigger" :data-on:click "$edit=false, @post('/presence')"
+                :style "display:none;"} ""]
       ;; logical-scroll viewport (custom wheel + scrollbars in /app.js)
       (grid-layers sh {:r0 0 :c0 0})]])))
 
@@ -468,6 +483,23 @@
                             (:cursor s) (in-window? view (:cursor s)))]
              (peer-marker view s)))))
 
+(defn- self-html
+  "THIS session's own selection / editing marker for its #self overlay, rendered
+   window-relative to its own view. Empty when there is no cursor or it scrolled
+   out of the window."
+  [sid sheet-id]
+  (let [s    (@sessions* sid)
+        view (session-view sid)
+        a    (:cursor s)]
+    (if (and s (= sheet-id (:sheet s)) a (in-window? view a))
+      (let [{:keys [ci ri]} (addr/parse a)
+            [cb rb] (view-base view)]
+        (str (h/html
+              [:div {:class (str "selfcell" (when (= (:editing s) a) " editing"))
+                     :style (format "left:%dpx;top:%dpx;width:%dpx;height:%dpx;"
+                                    (* (- ci cb) CW) (* (- ri rb) RH) (dec CW) (dec RH))}])))
+      "")))
+
 (defn- broadcast-presence!
   "Re-render the #peers overlay for every session on the sheet (each scoped to
    its own view). Called whenever any cursor / editing state changes."
@@ -532,7 +564,8 @@
           (patch-inner! gen "#colhead" (colhead-html cis))
           (patch-inner! gen "#rowhead" (rowhead-html ris))
           (d*/patch-elements! gen (meta-html sh (:r0 view) (:c0 view)))   ; #meta by id
-          ;; re-render peer cursors for the new window
+          ;; re-render this session's own marker + peer cursors for the new window
+          (patch-inner! gen "#self"  (self-html sid sheet-id))
           (patch-inner! gen "#peers" (peers-html sid sheet-id)))))))
 
 (defn- body-json [req]
@@ -540,18 +573,20 @@
     (json/read-value (slurp b) json/keyword-keys-object-mapper)))
 
 (defn- handle-presence
-  "Plain-JSON POST from app.js: {sid sheet cell editing}. Updates this session's
-   cursor / editing cell and re-broadcasts the overlay to everyone on the sheet."
+  "Datastar @post: signals carry {sel edit sheet sid}. Updates this session's
+   cursor (:cursor) and editing cell (:editing), patches THIS session's own
+   #self overlay back, and re-broadcasts #peers to everyone else on the sheet."
   [req]
-  (let [{:keys [sid sheet cell editing]} (body-json req)
-        sheet-id (if (store/valid-id? sheet) sheet "default")]
-    (when (and sid (re-matches sid-re (str sid)))
-      (ensure-session! sid sheet-id)
-      (swap! sessions* update sid assoc
-             :cursor  (when (addr/valid? cell) cell)
-             :editing (when (and editing (addr/valid? cell)) cell))
-      (broadcast-presence! sheet-id))
-    {:status 204}))
+  (let [{:keys [sel edit sid] :as sig} (read-signals req)
+        sheet-id (sheet-id-of sig)]
+    (ensure-session! sid sheet-id)
+    (swap! sessions* update sid assoc
+           :cursor  (when (addr/valid? sel) sel)
+           :editing (when (and edit (addr/valid? sel)) sel))
+    ;; peers' #peers via their persistent streams; this session's #self via the
+    ;; one-shot @post response below (which is what we return).
+    (broadcast-presence! sheet-id)
+    (sse req (fn [gen] (patch-inner! gen "#self" (self-html sid sheet-id))))))
 
 ;; Session lifecycle. The persistent /stream registers the session and stores
 ;; its push generator (server -> client collaboration channel). Cleanup never
@@ -578,7 +613,9 @@
            ;; flush once so the client sees an established, open stream (an SSE
            ;; that sends nothing looks "finished" -> client reconnect storm).
            (try (d*/patch-signals! gen "{}") (catch Throwable _))
-           ;; show this newcomer the cursors already present (and vice versa)
+           ;; restore this session's own marker (reconnect) and show it the
+           ;; cursors already present (and vice versa).
+           (try (patch-inner! gen "#self" (self-html sid sheet-id)) (catch Throwable _))
            (broadcast-presence! sheet-id)))})))
 
 (defn- handle-session-end [req]

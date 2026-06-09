@@ -179,34 +179,41 @@ that the client `translate`s.
 
 ### Presence & edit locking
 
-- **Selection highlight** (`app.js`, client-only), two tiers, both re-applied
-  after every `#cells` re-render via a `MutationObserver`:
-  - `.sel` — the selected cell ("you are here"); a calm outline that stays even
-    when focus moves to the formula bar. `SELA` tracks it; `selectCell` is driven
-    by a delegated `focusin` on `#viewport` and by `jump`.
-  - `.editing-local` — the cell being actively edited *right now* (its own input
-    focused, or the formula bar editing it); an **animated "marching-ants"** blue
-    dashed border (four gradient edges whose `background-position` scrolls via the
-    `cc-ants` keyframes) plus a soft fill. `EDITA` tracks it via cell and `#fbar`
-    focus listeners. Honors `prefers-reduced-motion`.
-- **Presence**: each session has a deterministic `:color` (hashed sid) plus
-  `:cursor` (the cell it is on) and `:editing` (the cell it is actively typing
-  in, else nil). `app.js` POSTs plain JSON to `/presence` on cell focus (cursor),
-  first keystroke (editing=true), blur (editing=false), **and** formula-bar
-  input/blur (so fbar edits lock the selected cell too). The server renders a
-  per-session **`#peers` overlay** — markers positioned window-relative to *that*
-  viewer's view — and pushes it to every session on the sheet (`broadcast-
-  presence!`). The `#peers` layer translates with `#cells`. A non-editing marker
-  is `pointer-events:none` (just a cursor); an **editing** marker is
-  `pointer-events:auto` with a translucent fill, so it **covers and locks** the
-  cell beneath (you cannot focus it).
+Selection and presence are **server-rendered overlays** — no per-cell client JS,
+no class-toggling on the cell `<input>`s (which would clobber the caret
+mid-edit). Two absolutely-positioned layers inside `#cellclip`, translated with
+`#cells` by `app.js`: `#self` (this user) and `#peers` (everyone else).
+
+- **Presence state**: each session has a deterministic `:color` (hashed sid),
+  `:cursor` (the cell it is on) and `:editing` (the cell it is actively editing,
+  else nil). The client posts presence **declaratively via Datastar**
+  (`@post('/presence')` in the cell `data-on:focusin`/`focusout` and the formula
+  bar's `data-on:focus`/`blur`), carrying signals `$sel` and `$edit`. `jump`
+  clicks a hidden `#presencetrigger`. `handle-presence` updates the session, then
+  patches **this** session's `#self` back on the `@post` response and
+  re-broadcasts `#peers` to everyone (`broadcast-presence!`).
+- **`#self` overlay** (`self-html`), two tiers, rendered from the session's
+  `:cursor`/`:editing`, `pointer-events:none` (never blocks typing):
+  - selected ("you are here") — a calm `.selfcell` border that persists when
+    focus moves to the formula bar (the box stays on `:cursor`).
+  - editing now — `.selfcell.editing`: an **animated "marching-ants"** blue dashed
+    border (four gradient edges whose `background-position` scrolls via the
+    `cc-ants` keyframes). Honors `prefers-reduced-motion`.
+  The highlight moves on a server round-trip (ms); the native input `:focus`
+  outline gives instant feedback in the meantime.
+- **`#peers` overlay** (`peers-html`/`peer-marker`): markers for every *other*
+  session whose cursor is in this viewer's window, positioned window-relative to
+  *that* viewer's view. A non-editing marker is `pointer-events:none` (just a
+  cursor); an **editing** marker is `pointer-events:auto` with a translucent
+  fill, so it **covers and locks** the cell beneath (you cannot focus it).
 - **Edit lock (server guard)**: `/cell` rejects a write when another session's
   `:editing` equals the target cell (`locked-by-other?`) → `#ERR`-style toast
   "cell is being edited by another collaborator". Belt-and-suspenders with the
   client overlay lock.
-- Cursors refresh on `/presence`, on a viewer's `/view` (re-render `#peers` for
-  the new window), on `/stream` open (newcomer sees existing cursors), and on
-  `reap-session!` (departed cursor disappears).
+- Overlays refresh on `/presence`, on a viewer's `/view` (re-render `#self` +
+  `#peers` for the new window), on `/stream` open (reconnect restores `#self`,
+  newcomer sees existing cursors), and on `reap-session!` (departed cursor
+  disappears).
 
 ## Tests
 
