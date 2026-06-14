@@ -26,7 +26,6 @@
         com.github.seancorfield/next.jdbc
         {:git/url "https://github.com/aldebogdanov/next-jdbc.git"
          :git/sha "f95d3ba621ebb64656d79db3c79c696f76a34dcb"}
-        missionary/missionary {:mvn/version "b.47"}
         com.h2database/h2 {:mvn/version "2.4.240"}
         com.yugabyte/jdbc-yugabytedb {:mvn/version "42.7.3-yb-4"}
 
