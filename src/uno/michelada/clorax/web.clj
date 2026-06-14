@@ -364,10 +364,18 @@
      [:head
       [:meta {:charset "utf-8"}]
       [:title "Clorax"]
-      [:style (h/raw (format (str "input.cell{position:absolute;width:%dpx;height:%dpx;"
+      ;; Cells are display <div class="cell"> (not inputs); the floating editor
+      ;; is the single #editor input. Both are absolutely positioned (cells by
+      ;; their inline left/top, #editor by app.js) — without this the left/top
+      ;; are ignored and everything stacks in flow at the top-left.
+      [:style (h/raw (format (str ".cell{position:absolute;width:%dpx;height:%dpx;"
                                   "box-sizing:border-box;border:1px solid #ddd;"
-                                  "padding:2px 4px;font:13px monospace;}")
-                             (- CW 1) (- RH 1)))]
+                                  "padding:2px 4px;font:13px monospace;overflow:hidden;"
+                                  "white-space:nowrap;background:#fff;}"
+                                  "#editor{position:absolute;width:%dpx;height:%dpx;"
+                                  "box-sizing:border-box;border:1px solid #4a90d9;"
+                                  "padding:2px 4px;font:13px monospace;outline:none;z-index:6;}")
+                             (- CW 1) (- RH 1) (- CW 1) (- RH 1)))]
       [:script {:type "module" :src "/datastar.js"}]
       [:script {:src "/app.js"}]]
      [:body {:data-signals (format "{cell:'', v:'', err:'', sel:'', bar:'', edit:false, r0:0, c0:0, sheet:'%s', sid:''}" storage-id)
