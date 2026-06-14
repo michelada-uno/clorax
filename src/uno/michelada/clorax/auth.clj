@@ -11,15 +11,14 @@
    NO underscores, so the `<uid>__<sheet-name>` storage key (see store/web)
    splits unambiguously on the first \"__\".
 
-   State: `data/users.edn` (uid -> profile) and `data/tokens.edn`
-   (auth token -> {:uid :at}) survive restarts; OAuth `state` nonces are
-   in-memory with a TTL (they only need to outlive one redirect)."
+   State: users and auth tokens live in Datahike (see `db`); tokens are stored
+   as a SHA-256 hash of the cookie secret. OAuth `state` nonces are in-memory
+   with a TTL (they only need to outlive one redirect)."
   (:require [clojure.string :as str]
-            [clojure.java.io :as io]
-            [clojure.edn :as edn]
             [org.httpkit.client :as hc]
-            [jsonista.core :as json])
-  (:import [java.security SecureRandom]))
+            [jsonista.core :as json]
+            [uno.michelada.clorax.db :as db])
+  (:import [java.security SecureRandom MessageDigest]))
 
 ;; --- config ---------------------------------------------------------------
 
@@ -76,31 +75,12 @@
       (contains? #{"0" "false" "no"} v) false
       :else (empty? (providers)))))
 
-;; --- persistent maps (users, tokens) ---------------------------------------
+;; --- user registry (Datahike) ----------------------------------------------
 
-(def ^:private dir "data")
-
-(defn- edn-file [n] (io/file dir (str n ".edn")))
-
-(defn- load-edn [n]
-  (let [f (edn-file n)]
-    (if (.exists f) (edn/read-string (slurp f)) {})))
-
-(defn- save-edn! [n m]
-  (let [f (edn-file n)]
-    (io/make-parents f)
-    (spit f (pr-str m))))
-
-;; delay'd so simply requiring the ns doesn't touch disk
-(defonce ^:private users*  (delay (atom (load-edn "users"))))
-(defonce ^:private tokens* (delay (atom (load-edn "tokens"))))
-
-(defn user-info [uid] (get @@users* uid))
+(defn user-info [uid] (db/user-info uid))
 
 (defn- upsert-user! [uid profile]
-  (swap! @users* update uid merge (assoc profile :uid uid))
-  (save-edn! "users" @@users*)
-  uid)
+  (db/upsert-user! (assoc profile :uid uid)))
 
 ;; --- ids / tokens -----------------------------------------------------------
 
@@ -125,16 +105,21 @@
     (.nextBytes rng bs)
     (apply str (map #(format "%02x" %) bs))))
 
-(defn- mint-token! [uid]
-  (let [tok (rand-hex 32)]
-    (swap! @tokens* assoc tok {:uid uid :at (System/currentTimeMillis)})
-    (save-edn! "tokens" @@tokens*)
-    tok))
+(defn- sha256 [s]
+  (->> (.digest (MessageDigest/getInstance "SHA-256") (.getBytes (str s) "UTF-8"))
+       (map #(format "%02x" %))
+       (apply str)))
 
-(defn revoke-token! [tok]
-  (when tok
-    (swap! @tokens* dissoc tok)
-    (save-edn! "tokens" @@tokens*)))
+(defn- mint-token!
+  "Mint a token: persist its HASH against `uid`, return the secret for the
+   cookie (the DB never stores the secret itself)."
+  [uid]
+  (let [secret (rand-hex 32)]
+    (db/put-token! (sha256 secret) uid)
+    secret))
+
+(defn revoke-token! [secret]
+  (when secret (db/delete-token! (sha256 secret))))
 
 ;; --- cookies ----------------------------------------------------------------
 
@@ -158,7 +143,7 @@
 (defn req->uid
   "The authenticated user id for a request, or nil."
   [req]
-  (some->> (req->token req) (get @@tokens*) :uid))
+  (some-> (req->token req) sha256 db/token-uid))
 
 ;; --- OAuth state (CSRF nonce) -------------------------------------------------
 

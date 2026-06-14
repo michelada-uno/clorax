@@ -120,9 +120,24 @@ per-owner sheet namespacing (`<uid>__<name>`, fmt 2 ownership envelope),
 owner-only /share toggle (+ share link), access checks on every endpoint,
 logout reaps the user's live sessions, /debug gated behind the dev provider.
 
+DONE (Datahike step 1): users + auth tokens moved off the EDN files into a
+Datahike store (`db` ns). Tokens are now stored as a **SHA-256 hash** (cookie
+carries the secret). Backends: H2 dev/staging, YugabyteDB prod (konserve-jdbc
+fork), `:memory` for tests. Verified: token survives a server restart; logout
+revokes it. (Old `data/users.edn`/`data/tokens.edn` are now unused.)
+
 REMAINING:
-- **Tokens are stored in plaintext** (`data/tokens.edn`). Hash them (the cookie
-  carries the secret; the server only needs to verify) before any real deploy.
+- **Sheets metadata + shares still file-based.** Next Datahike step: move
+  sheet `:owner`/`:public` (→ ACL grants) out of the EDN file into the `sheet`/
+  `share` entities (schema already defined in `db`), switch sheet ids to uuids,
+  and migrate existing fmt-2 files. `accessible-rec` then queries the ACL.
+- **Spindel pinned at 0.1.15**: 0.1.23 changes spin-cancellation semantics and
+  breaks the structural-rebuild path (recomputed cells come back
+  `{:error "Spin cancelled by user"}`; 2 engine-test failures). Bumping spindel
+  needs its own investigation + likely an engine fix; do it in a separate PR.
+- **Datahike create→connect pause**: first-run creation sleeps ~300 ms before
+  `connect` to dodge konserve-jdbc's async c3p0 pool close. Works, but a retry/
+  await on a readiness signal would be cleaner than a fixed sleep.
 - **No read-only tier**: a public sheet is editable by any signed-in user.
   Sharing levels (view/edit) need a richer ACL than the single :public flag —
   the fmt-2 envelope leaves room.

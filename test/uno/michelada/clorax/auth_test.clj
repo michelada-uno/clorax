@@ -1,9 +1,10 @@
 (ns uno.michelada.clorax.auth-test
-  (:require [clojure.test :refer [deftest testing is]]
-            [uno.michelada.clorax.auth :as auth]))
+  (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [uno.michelada.clorax.auth :as auth]
+            [uno.michelada.clorax.db :as db]))
 
-;; NOTE: dev-login!/tokens persist to data/users.edn + data/tokens.edn. Tests
-;; revoke the tokens they mint; the dev-test user entry merging is idempotent.
+;; Users + tokens live in Datahike; each test runs against a fresh in-memory db.
+(use-fixtures :each (fn [t] (db/init-mem!) (t)))
 
 (deftest dev-login-and-cookie-roundtrip
   ;; no provider env vars in the test JVM -> dev auth active by default

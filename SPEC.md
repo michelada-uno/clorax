@@ -21,7 +21,8 @@ on load. Multiple clients edit one sheet live.
 | ns | role |
 |----|------|
 | `addr` | A1 addressing. `col<->idx`, `parse`, `make`, `range-cells`, `valid?`. Address = letters+digits (`AAB1234`); **no colon** (colon = range separator, `A1:C3`). 0-based `ci/ri` internally. |
-| `auth` | Identity: OAuth 2.0 code flow (GitHub/Google, providers are data), name-only dev login, auth-token cookies, persistent user/token registries. |
+| `auth` | Identity: OAuth 2.0 code flow (GitHub/Google, providers are data), name-only dev login, auth-token cookies; orchestrates hashing + the user/token registry in `db`. |
+| `db` | Datahike-backed registry (users, auth tokens; sheets+shares next). Backends: H2 dev/staging, YugabyteDB prod (konserve-jdbc fork), `:memory` for tests. |
 | `runtime` | Referenced by compiled formula bodies. `lookup`/`lookup-val` resolve a cell against the **current execution context's metadata** (works on executor threads). |
 | `formula` | Parse + compile formulas to Spins. |
 | `sheet` | Cell registry over one Spindel execution context. The engine API. |
@@ -123,10 +124,20 @@ await chain).
   on `/login`, `GET /auth/dev?name=`) is on by default — `CLORAX_DEV_AUTH=1/0`
   forces it either way.
 - **Auth sessions**: 32-byte random token in an `HttpOnly; SameSite=Lax`
-  cookie (`clorax_auth`, 30 d; `Secure` when base-url is https). Users and
-  tokens persist (`data/users.edn`, `data/tokens.edn`) so logins survive
-  restarts. `POST /logout` revokes the token **and reaps the user's live
-  sessions** (presence markers / edit locks don't linger).
+  cookie (`clorax_auth`, 30 d; `Secure` when base-url is https). The cookie
+  carries the secret; the DB stores only its **SHA-256 hash** (`db`, Datahike)
+  — users and tokens survive restarts. `POST /logout` revokes the token **and
+  reaps the user's live sessions** (presence markers / edit locks don't linger).
+- **Datahike store** (`db`): users + auth tokens (sheet metadata + shares move
+  here next; sheet CELL data stays in the file store). Backend is env-driven:
+  H2 file (`data/clorax-h2`) for dev/staging, a full JDBC url
+  (`CLORAX_DB_JDBC_URL`) for YugabyteDB in prod, `:memory` for tests
+  (`CLORAX_DB_BACKEND=mem`). `:keep-history? true` (as-of underpins the planned
+  audit/branching features). JDBC support is konserve-jdbc directly (forked for
+  YugabyteDB) — datahike 0.8 connects konserve stores generically, no
+  datahike-jdbc wrapper. konserve caches one c3p0 pool per spec and closes it
+  async on `create-database`'s release, so first-run creation pauses ~300 ms
+  before `connect` (same spec → same pool) to avoid using a closed pool.
 - **User ids**: `<prefix>-<ext-id>` sanitized to `[a-z0-9-]` (`gh-…`, `gg-…`,
   `dev-…`), max 24 chars — no underscores by construction (see storage ids).
 - **Tenancy**: every request resolves through `accessible-rec`: owners reach
@@ -282,9 +293,10 @@ mid-edit). Two absolutely-positioned layers inside `#cellclip`, translated with
 `clojure -X:test` — `addr`, `engine` (literals, chains, ranges, formula-over-
 formula, structural rebuild, errors, cycles), `store` (save/load roundtrip,
 valid-id, ownership envelope, fmt-1 legacy, storage-id split), `auth` (dev
-login, uid sanitizing, cookie roundtrip, token revocation). Currently 23 tests
-/ 90 assertions. Web/session/collab behavior is verified manually + via curl
-(see CLAUDE.md); no web unit tests yet.
+login, uid sanitizing, cookie roundtrip, token revocation), `db` (user upsert +
+created-at stability, token roundtrip/revoke, per-test isolation — `:memory`
+backend). Currently 26 tests / 101 assertions. Web/session/collab behavior is
+verified manually + via curl (see CLAUDE.md); no web unit tests yet.
 
 ## Build & release
 

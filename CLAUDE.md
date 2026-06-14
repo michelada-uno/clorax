@@ -43,7 +43,8 @@ If the user types `/caveman`, invoke the `caveman` Skill.
 - **Spike risky unknowns first** (there are `spike*.clj` files proving Spindel
   behavior). Don't build UI on unproven engine assumptions.
 - **Test after engine changes**: `clojure -X:test` (must stay green, currently
-  23 tests / 90 assertions). Add tests for new engine behavior.
+  26 tests / 101 assertions; `db`/`auth` suites use the `:memory` Datahike
+  backend). Add tests for new engine behavior.
 - **Check `app.js` syntax** after editing: `node --check resources/public/app.js`.
 - Keep `TECHDEBT.md` current — append when you defer something, mark items DONE.
 
@@ -58,6 +59,16 @@ node --check resources/public/app.js
 clojure -T:build uber             # runnable uberjar -> target/clorax-<v>.jar
 java -jar target/clorax-<v>.jar  # run the built artifact (serves :8080)
 ```
+
+**Identity store (Datahike).** Users + auth tokens live in Datahike (`db` ns),
+not files. Dev/staging defaults to an H2 file at `data/clorax-h2`; prod sets
+`CLORAX_DB_JDBC_URL` (YugabyteDB); tests use `:memory`. Env: `CLORAX_DB_BACKEND`
+(`mem`), `CLORAX_DB_JDBC_URL`, `CLORAX_DB_TABLE`, `CLORAX_DB_PATH` (H2 file),
+`CLORAX_DB_ID` (stable store UUID). JDBC is konserve-jdbc directly (forked for
+YugabyteDB — see `deps.edn`); **datahike-jdbc is NOT used** (datahike 0.8
+connects konserve stores generically). Sheet CELL data still lives in
+`data/<id>.edn`. **Spindel stays pinned at 0.1.15** — 0.1.23 breaks structural
+rebuild (see TECHDEBT.md).
 
 Namespaces are rooted at `uno.michelada.clorax.*` under
 `src/uno/michelada/clorax/`. Coordinate `uno.michelada/clorax`; repo lives in
