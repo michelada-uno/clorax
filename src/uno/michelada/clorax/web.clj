@@ -447,9 +447,15 @@
   (hk/->sse-response req {hk/on-open (fn [gen] (f gen) (d*/close-sse! gen))}))
 
 (defn- patch-inner!
-  "Replace inner HTML of `selector` with `html`."
+  "Replace inner HTML of `selector` with `html`. Blank `html` (e.g. an empty
+   #self / #peers overlay) would make the SDK emit a `datastar-patch-elements`
+   event with NO `elements` line, which Datastar's client parser rejects
+   (\"Error in input stream\") — aborting the SSE stream and reconnect-storming.
+   So clear with an inert HTML comment instead: a valid, non-empty `elements`
+   payload that still empties the element visually."
   [gen selector html]
-  (d*/patch-elements! gen html {d*/selector selector d*/patch-mode d*/pm-inner}))
+  (let [html (if (str/blank? html) "<!-- -->" html)]
+    (d*/patch-elements! gen html {d*/selector selector d*/patch-mode d*/pm-inner})))
 
 (defn- signals! [gen m]
   (d*/patch-signals! gen (json/write-value-as-string m)))

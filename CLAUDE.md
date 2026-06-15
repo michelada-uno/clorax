@@ -121,6 +121,14 @@ Gotchas learned the hard way:
   events: `datastar-patch-elements` / `datastar-patch-signals`. Attrs use colon
   syntax (`data-on:click`, `data-bind:x`).
 - SSE/lifecycle now uses the official SDK (`dev.data-star.clojure/*`).
+- **Never send an empty `patch-elements`.** `d*/patch-elements!` with blank HTML
+  emits a `datastar-patch-elements` event with **no `elements` line**; the
+  client SSE reader throws ("Error in input stream"), aborts the stream, and
+  reconnect-storms — in *every* browser (curl looks fine; it doesn't parse).
+  This bit `/stream`'s on-open #self/#peers flush when there was no cursor.
+  `patch-inner!` now substitutes an inert `<!-- -->` for blank content. Verify a
+  persistent stream by counting `/stream` resource entries on a clean load (must
+  stay 1), not by eyeballing — a storm of ~1 reconnect/sec still "mostly works".
 - **http-kit does NOT fire an async-channel close on idle disconnect without a
   write** (verified). So session cleanup uses `navigator.sendBeacon` on
   `pagehide` + a TTL sweep — **no heartbeat**. Don't reintroduce heartbeats.
