@@ -218,6 +218,12 @@
                (when (some #(contains? (:deps %) addr) (vals props)) a))
              @styles)))
 
+(defn style-srcs
+  "Raw style sources of one cell: {prop raw} (empty when none). For echoing the
+   selected cell's style back into the style bar."
+  [{:keys [styles]} addr]
+  (into {} (map (fn [[p e]] [p (:raw e)])) (get @styles addr)))
+
 (defn document-styles
   "Serializable style source: {addr {prop raw}} (only cells that have any)."
   [{:keys [styles]}]

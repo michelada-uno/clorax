@@ -298,8 +298,10 @@
   (let [disp (display sh a)
         raw  (or (sheet/raw sh a) disp)
         w    (sheet/col-width sh ci)
-        h    (sheet/row-height sh ri)]
+        h    (sheet/row-height sh ri)
+        srcs (sheet/style-srcs sh a)]      ; {prop raw} -> echoed into the style bar
     [:div {:id (cell-id a) :class "cell" :data-raw raw
+           :data-sty (when (seq srcs) (json/write-value-as-string srcs))
            :style (str (format "left:%dpx;top:%dpx"
                                (- (axis-x sh ci) (axis-x sh cbase))
                                (- (axis-y sh ri) (axis-y sh rbase)))
@@ -368,7 +370,7 @@
             :data-on:click
             (str "evt.target.classList.contains('cell') && "
                  "($sel=evt.target.id.slice(2), $v=(evt.target.dataset.raw||''), "
-                 "$edit=false, @post('/presence'))")
+                 "$edit=false, syncStyle(evt.target.id.slice(2)), @post('/presence'))")
             :data-on:dblclick
             "evt.target.classList.contains('cell') && startEdit(evt.target.id.slice(2))"
             :style "position:relative;height:78vh;border:1px solid #ccc;overflow:hidden;"}
@@ -630,6 +632,7 @@
       ;;   =(if (> $val 100) "tomato" "white")
       [:div {:class "toolrow"}
        [:select {:id "stylepropbox" :class "tool" :data-bind:styleprop ""
+                 :data-on:change "syncStyle($sel)"
                  :title "style / format property of the selected cell"}
         (for [p (concat (keys style-css) value-props)] [:option {:value (name p)} (name p)])]
        [:input {:id "stylesrcbox" :class "tool mono" :data-bind:stylesrc ""

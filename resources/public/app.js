@@ -144,7 +144,20 @@ function curSel() { const b = $('addrbox'); return b && b.value ? b.value.toUppe
 function syncBar(addr) {
   const cell = $('c_' + addr), fb = $('fbar');
   if (fb) { fb.value = cell ? (cell.dataset.raw || '') : ''; fb.dispatchEvent(new Event('input', {bubbles: true})); }
+  syncStyle(addr);
 }
+// Mirror the selected cell's style/format SOURCE for the chosen property into
+// the style box (#stylesrcbox), so the style bar reflects the selection like the
+// formula bar does. Sources ride on each cell as data-sty (JSON {prop: raw}).
+function syncStyle(addr) {
+  const prop = $('stylepropbox'), b = $('stylesrcbox');
+  if (!prop || !b) return;
+  const cell = $('c_' + addr);
+  let src = '';
+  if (cell && cell.dataset.sty) { try { src = (JSON.parse(cell.dataset.sty) || {})[prop.value] || ''; } catch (e) {} }
+  b.value = src; b.dispatchEvent(new Event('input', {bubbles: true}));
+}
+window.syncStyle = syncStyle;
 function setSelValue(addr) {   // set $sel only (no presence post)
   const b = $('addrbox'); if (b) { b.value = addr; b.dispatchEvent(new Event('input', {bubbles: true})); }
   syncBar(addr);

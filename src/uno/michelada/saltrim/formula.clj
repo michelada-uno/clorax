@@ -75,6 +75,7 @@
      uno.michelada.saltrim.runtime/lookup uno.michelada.saltrim.runtime/lookup-val
      min max abs mod quot rem inc dec
      = not= < > <= >= and or not if when
+     str format
      map reduce count})
 
 (defn validate!
