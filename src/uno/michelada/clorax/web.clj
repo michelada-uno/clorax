@@ -8,7 +8,8 @@
    from the registry, no spin).
 
    Formula bar: wide input mirroring the selected cell's SOURCE (value or
-   formula). Focusing a cell sets $sel/$bar; editing the bar posts to that cell.
+   formula). It shares the `$v` signal with the floating #editor, so the two
+   stay live-synced; editing the bar posts to the selected cell.
 
    Run:  clj -M:web   then open http://localhost:8080"
   (:require [clojure.string :as str]
@@ -287,7 +288,8 @@
             ;; #self and #peers overlays. Keyboard nav + editor live in /app.js.
             :data-on:click
             (str "evt.target.classList.contains('cell') && "
-                 "($sel=evt.target.id.slice(2), $edit=false, @post('/presence'))")
+                 "($sel=evt.target.id.slice(2), $v=(evt.target.dataset.raw||''), "
+                 "$edit=false, @post('/presence'))")
             :data-on:dblclick
             "evt.target.classList.contains('cell') && startEdit(evt.target.id.slice(2))"
             :style "position:relative;height:78vh;border:1px solid #ccc;overflow:hidden;"}
@@ -327,7 +329,7 @@
        ;; keydown/blur/dblclick. data-bind:v feeds the value into $v; commit posts
        ;; /cell via #celltrigger, Esc cancels.
        [:div {:id "editlayer" :style "position:absolute;left:0;top:0;will-change:transform;"}
-        [:input {:id "editor" :data-bind:v ""}]]]
+        [:input {:id "editor" :data-bind:v "" :style "display:none;"}]]]
       ;; custom scrollbars
       [:div {:id "vbar" :style (format (str "position:absolute;right:0;top:%dpx;bottom:%dpx;width:%dpx;"
                                             "background:#f0f0f0;z-index:5;") HDR BAR BAR)}
@@ -364,13 +366,49 @@
      [:head
       [:meta {:charset "utf-8"}]
       [:title "Clorax"]
-      [:style (h/raw (format (str "input.cell{position:absolute;width:%dpx;height:%dpx;"
-                                  "box-sizing:border-box;border:1px solid #ddd;"
-                                  "padding:2px 4px;font:13px monospace;}")
-                             (- CW 1) (- RH 1)))]
+      ;; Cells are display <div class="cell"> (not inputs); the floating editor
+      ;; is the single #editor input. Both are absolutely positioned (cells by
+      ;; their inline left/top, #editor by app.js) — without this the left/top
+      ;; are ignored and everything stacks in flow at the top-left.
+      [:style (h/raw
+               (str
+                (format (str ".cell{position:absolute;width:%dpx;height:%dpx;"
+                             "box-sizing:border-box;border:1px solid #ddd;"
+                             "padding:2px 4px;font:13px monospace;overflow:hidden;"
+                             "white-space:nowrap;background:#fff;}"
+                             "#editor{position:absolute;width:%dpx;height:%dpx;"
+                             "box-sizing:border-box;border:1px solid #4a90d9;"
+                             "padding:2px 4px;font:13px monospace;outline:none;z-index:6;}")
+                        (- CW 1) (- RH 1) (- CW 1) (- RH 1))
+                ;; selection / editing OVERLAY (#self), server-rendered. Literal %
+                ;; in the gradients -> kept OUT of the format call above.
+                ;; calm "you are here" selection box:
+                ".selfcell{position:absolute;box-sizing:border-box;pointer-events:none;"
+                "border:2px solid #7aa7f0;}"
+                ;; actively editing: animated 'marching ants' border (four gradient
+                ;; edges whose position scrolls). pointer-events stays none so the
+                ;; cell beneath is still typable.
+                ".selfcell.editing{border-color:transparent;"
+                "background-image:"
+                "linear-gradient(90deg,#1a73e8 50%,transparent 50%),"
+                "linear-gradient(90deg,#1a73e8 50%,transparent 50%),"
+                "linear-gradient(0deg,#1a73e8 50%,transparent 50%),"
+                "linear-gradient(0deg,#1a73e8 50%,transparent 50%);"
+                "background-repeat:repeat-x,repeat-x,repeat-y,repeat-y;"
+                "background-size:8px 2px,8px 2px,2px 8px,2px 8px;"
+                "background-position:0 0,0 100%,0 0,100% 0;"
+                "animation:cc-ants .6s infinite linear;}"
+                "@keyframes cc-ants{to{background-position:8px 0,-8px 100%,0 -8px,100% 8px;}}"
+                "@media(prefers-reduced-motion:reduce){.selfcell.editing{animation:none;}}"
+                ;; collaborator cursor overlays (#peers):
+                ".peer{position:absolute;box-sizing:border-box;border:2px solid #888;border-radius:2px;}"
+                ".peer.editing{cursor:not-allowed;}"
+                ".peer .peertag{position:absolute;top:-15px;left:-2px;"
+                "font:10px/14px sans-serif;color:#fff;padding:0 4px;"
+                "border-radius:3px 3px 3px 0;white-space:nowrap;}"))]
       [:script {:type "module" :src "/datastar.js"}]
       [:script {:src "/app.js"}]]
-     [:body {:data-signals (format "{cell:'', v:'', err:'', sel:'', bar:'', edit:false, r0:0, c0:0, sheet:'%s', sid:''}" storage-id)
+     [:body {:data-signals (format "{cell:'', v:'', err:'', sel:'', edit:false, r0:0, c0:0, sheet:'%s', sid:''}" storage-id)
              :style "font-family:sans-serif;margin:0;padding:.6rem;"}
       ;; hidden input carrying the session id into $sid, and a hidden trigger
       ;; /app.js clicks to open the persistent collaboration stream via Datastar
@@ -398,10 +436,12 @@
                             "border:1px solid #bbb;border-radius:4px;")}]
        ;; editing via the formula bar still drives presence on the SELECTED cell
        ;; (so it shows the marching-ants self marker and locks it for peers).
-       [:input {:id "fbar" :data-bind:bar "" :placeholder "value or =formula"
+       ;; formula bar shares $v with the floating #editor, so the two stay live-
+       ;; synced: typing in either updates $v and the other reflects it.
+       [:input {:id "fbar" :data-bind:v "" :placeholder "value or =formula"
                 :data-on:focus "$edit=true, @post('/presence')"
-                :data-on:keydown "evt.key==='Enter' && ($cell=$sel, $v=$bar, @post('/cell'))"
-                :data-on:blur "$cell=$sel, $v=$bar, @post('/cell'), $edit=false, @post('/presence')"
+                :data-on:keydown "evt.key==='Enter' && ($cell=$sel, @post('/cell'))"
+                :data-on:blur "$cell=$sel, @post('/cell'), $edit=false, @post('/presence')"
                 :style (str "flex:1;font:13px monospace;padding:5px 8px;border:1px solid #bbb;"
                             "border-radius:4px;")}]
        ;; sharing toggle / badge (patched back by POST /share)
@@ -439,9 +479,15 @@
   (hk/->sse-response req {hk/on-open (fn [gen] (f gen) (d*/close-sse! gen))}))
 
 (defn- patch-inner!
-  "Replace inner HTML of `selector` with `html`."
+  "Replace inner HTML of `selector` with `html`. Blank `html` (e.g. an empty
+   #self / #peers overlay) would make the SDK emit a `datastar-patch-elements`
+   event with NO `elements` line, which Datastar's client parser rejects
+   (\"Error in input stream\") — aborting the SSE stream and reconnect-storming.
+   So clear with an inert HTML comment instead: a valid, non-empty `elements`
+   payload that still empties the element visually."
   [gen selector html]
-  (d*/patch-elements! gen html {d*/selector selector d*/patch-mode d*/pm-inner}))
+  (let [html (if (str/blank? html) "<!-- -->" html)]
+    (d*/patch-elements! gen html {d*/selector selector d*/patch-mode d*/pm-inner})))
 
 (defn- signals! [gen m]
   (d*/patch-signals! gen (json/write-value-as-string m)))
@@ -502,6 +548,11 @@
         [cb rb] (view-base view)
         editing? (= editing cursor)
         tag (or uname "•")
+        ;; the tag normally floats above the cell (CSS top:-15px); on the top
+        ;; rendered row that's clipped by #cellclip's overflow, so flip it below.
+        top-row? (zero? (- ri rb))
+        tag-style (str "background:" color
+                       (when top-row? (str ";top:" (dec RH) "px;border-radius:0 3px 3px 3px")))
         base (format (str "left:%dpx;top:%dpx;width:%dpx;height:%dpx;border-color:%s;")
                      (* (- ci cb) CW) (* (- ri rb) RH) (dec CW) (dec RH) color)]
     (str (h/html
@@ -510,7 +561,7 @@
                           (str base "background:" (rgba color "0.16")
                                ";pointer-events:auto;cursor:not-allowed;")
                           base)}
-           [:span {:class "peertag" :style (str "background:" color)}
+           [:span {:class "peertag" :style tag-style}
             (if editing? (str tag " editing…") tag)]]))))
 
 (defn- peers-html
