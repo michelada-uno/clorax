@@ -287,7 +287,8 @@
             ;; #self and #peers overlays. Keyboard nav + editor live in /app.js.
             :data-on:click
             (str "evt.target.classList.contains('cell') && "
-                 "($sel=evt.target.id.slice(2), $edit=false, @post('/presence'))")
+                 "($sel=evt.target.id.slice(2), $bar=(evt.target.dataset.raw||''), "
+                 "$edit=false, @post('/presence'))")
             :data-on:dblclick
             "evt.target.classList.contains('cell') && startEdit(evt.target.id.slice(2))"
             :style "position:relative;height:78vh;border:1px solid #ccc;overflow:hidden;"}
@@ -368,14 +369,42 @@
       ;; is the single #editor input. Both are absolutely positioned (cells by
       ;; their inline left/top, #editor by app.js) — without this the left/top
       ;; are ignored and everything stacks in flow at the top-left.
-      [:style (h/raw (format (str ".cell{position:absolute;width:%dpx;height:%dpx;"
-                                  "box-sizing:border-box;border:1px solid #ddd;"
-                                  "padding:2px 4px;font:13px monospace;overflow:hidden;"
-                                  "white-space:nowrap;background:#fff;}"
-                                  "#editor{position:absolute;width:%dpx;height:%dpx;"
-                                  "box-sizing:border-box;border:1px solid #4a90d9;"
-                                  "padding:2px 4px;font:13px monospace;outline:none;z-index:6;}")
-                             (- CW 1) (- RH 1) (- CW 1) (- RH 1)))]
+      [:style (h/raw
+               (str
+                (format (str ".cell{position:absolute;width:%dpx;height:%dpx;"
+                             "box-sizing:border-box;border:1px solid #ddd;"
+                             "padding:2px 4px;font:13px monospace;overflow:hidden;"
+                             "white-space:nowrap;background:#fff;}"
+                             "#editor{position:absolute;width:%dpx;height:%dpx;"
+                             "box-sizing:border-box;border:1px solid #4a90d9;"
+                             "padding:2px 4px;font:13px monospace;outline:none;z-index:6;}")
+                        (- CW 1) (- RH 1) (- CW 1) (- RH 1))
+                ;; selection / editing OVERLAY (#self), server-rendered. Literal %
+                ;; in the gradients -> kept OUT of the format call above.
+                ;; calm "you are here" selection box:
+                ".selfcell{position:absolute;box-sizing:border-box;pointer-events:none;"
+                "border:2px solid #7aa7f0;}"
+                ;; actively editing: animated 'marching ants' border (four gradient
+                ;; edges whose position scrolls). pointer-events stays none so the
+                ;; cell beneath is still typable.
+                ".selfcell.editing{border-color:transparent;"
+                "background-image:"
+                "linear-gradient(90deg,#1a73e8 50%,transparent 50%),"
+                "linear-gradient(90deg,#1a73e8 50%,transparent 50%),"
+                "linear-gradient(0deg,#1a73e8 50%,transparent 50%),"
+                "linear-gradient(0deg,#1a73e8 50%,transparent 50%);"
+                "background-repeat:repeat-x,repeat-x,repeat-y,repeat-y;"
+                "background-size:8px 2px,8px 2px,2px 8px,2px 8px;"
+                "background-position:0 0,0 100%,0 0,100% 0;"
+                "animation:cc-ants .6s infinite linear;}"
+                "@keyframes cc-ants{to{background-position:8px 0,-8px 100%,0 -8px,100% 8px;}}"
+                "@media(prefers-reduced-motion:reduce){.selfcell.editing{animation:none;}}"
+                ;; collaborator cursor overlays (#peers):
+                ".peer{position:absolute;box-sizing:border-box;border:2px solid #888;border-radius:2px;}"
+                ".peer.editing{cursor:not-allowed;}"
+                ".peer .peertag{position:absolute;top:-15px;left:-2px;"
+                "font:10px/14px sans-serif;color:#fff;padding:0 4px;"
+                "border-radius:3px 3px 3px 0;white-space:nowrap;}"))]
       [:script {:type "module" :src "/datastar.js"}]
       [:script {:src "/app.js"}]]
      [:body {:data-signals (format "{cell:'', v:'', err:'', sel:'', bar:'', edit:false, r0:0, c0:0, sheet:'%s', sid:''}" storage-id)

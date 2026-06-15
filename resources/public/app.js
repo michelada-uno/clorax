@@ -112,8 +112,16 @@ function curSel() { const b = $('addrbox'); return b && b.value ? b.value.toUppe
 // $sel lives in the address box (data-bind:sel). We set it and click a hidden
 // Datastar trigger so the server moves the #self overlay; the client only keeps
 // the selected cell scrolled into view.
+// Mirror the selected cell's SOURCE into the formula bar (#fbar -> $bar), so it
+// always shows what's in the selected cell. Cell clicks set $bar via Datastar;
+// keyboard nav / jump go through here, so sync the bar here too.
+function syncBar(addr) {
+  const cell = $('c_' + addr), fb = $('fbar');
+  if (fb) { fb.value = cell ? (cell.dataset.raw || '') : ''; fb.dispatchEvent(new Event('input', {bubbles: true})); }
+}
 function setSelValue(addr) {   // set $sel only (no presence post)
   const b = $('addrbox'); if (b) { b.value = addr; b.dispatchEvent(new Event('input', {bubbles: true})); }
+  syncBar(addr);
 }
 function setSel(addr) {        // set $sel + post selection presence (cursor, edit=false)
   setSelValue(addr);
