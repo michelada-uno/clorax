@@ -1358,5 +1358,8 @@
 ;; Lifecycle is owned by the mount `system` ns; -main delegates there (resolved
 ;; at runtime to avoid a compile-time cycle, since system requires web).
 (defn -main [& _]
+  (.addShutdownHook
+   (Runtime/getRuntime)
+   (Thread. ^Runnable (requiring-resolve 'uno.michelada.saltrim.system/stop!)))
   ((requiring-resolve 'uno.michelada.saltrim.system/start!))
   @(promise))
