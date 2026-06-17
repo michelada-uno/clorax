@@ -26,7 +26,8 @@
             [uno.michelada.saltrim.util :as util :refer [timed]]
             [mount.core :refer [defstate]]
             [starfederation.datastar.clojure.api :as d*]
-            [starfederation.datastar.clojure.adapter.http-kit :as hk])
+            [starfederation.datastar.clojure.adapter.http-kit :as hk]
+            [starfederation.datastar.clojure.adapter.common :as ac])
   (:gen-class))
 
 ;; --- geometry -----------------------------------------------------------
@@ -662,11 +663,33 @@
 
 ;; --- SSE (official Datastar SDK) ----------------------------------------
 
+;; Optional SSE tracing: set SALTRIM_SSE_DEBUG=1 to log every server-sent event
+;; (type + a snippet of its data lines) to the console. Implemented as a Datastar
+;; write profile — the SDK's designed seam for this — so it sees every event the
+;; server emits through the SDK, on both the one-shot @post responses and the
+;; persistent /stream. (The raw WebKit flush comment bypasses the SDK, so
+;; `flush-tick!` logs itself.) Off by default = zero overhead.
+(def ^:private sse-debug? (some? (System/getenv "SALTRIM_SSE_DEBUG")))
+
+(def ^:private logging-write-profile
+  (let [build (ac/->build-event-str)]
+    {ac/write! (fn [event-type data-lines opts]
+                 (util/log "SSE →" event-type "·"
+                           (let [s (str/join " | " data-lines)]
+                             (if (> (count s) 240) (str (subs s 0 240) "…") s)))
+                 (build event-type data-lines opts))}))
+
+(defn- sse-opts
+  "Add the SSE-tracing write profile to `->sse-response` opts when SALTRIM_SSE_DEBUG
+   is set; otherwise pass them through unchanged (SDK uses its default profile)."
+  [opts]
+  (cond-> opts sse-debug? (assoc hk/write-profile logging-write-profile)))
+
 (defn- sse
   "One-shot SSE response: open, run f with the generator, close. f does the
    patch-elements!/patch-signals! calls."
   [req f]
-  (hk/->sse-response req {hk/on-open (fn [gen] (f gen) (d*/close-sse! gen))}))
+  (hk/->sse-response req (sse-opts {hk/on-open (fn [gen] (f gen) (d*/close-sse! gen))})))
 
 ;; --- Safari/WebKit fetch-stream flush (server-side, WebKit-only) ---------
 ;; WebKit delivers a fetch() response body to JS in coalesced lumps and holds
@@ -714,6 +737,7 @@
    primitive, so we write the http-kit channel directly, under the gen's lock."
   [sid]
   (when-let [g (:gen (@sessions* sid))]
+    (when sse-debug? (util/log "SSE →" ": flush" "·" sid))
     (try (d*/lock-sse! g
            (http/send! (.ch ^starfederation.datastar.clojure.adapter.http_kit.impl.SSEGenerator g)
                        ": flush\n" false))
@@ -1093,6 +1117,7 @@
     (fn [uid sid sheet-id token]
       (let [webkit? (webkit-ua? (get-in req [:headers "user-agent"]))]
        (hk/->sse-response req
+        (sse-opts
         {hk/on-open
          (fn [gen]
            (when (and sid (re-matches sid-re sid))
@@ -1107,7 +1132,7 @@
              ;; restore this session's own marker (reconnect) and show it the
              ;; cursors already present (and vice versa).
              (try (patch-inner! gen "#self" (self-html sid sheet-id)) (catch Throwable _))
-             (broadcast-presence! sheet-id)))})))))
+             (broadcast-presence! sheet-id)))}))))))
 
 (defn- handle-session-end [req]
   (let [uid (auth/req->uid req)
