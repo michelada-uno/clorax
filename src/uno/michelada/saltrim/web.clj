@@ -572,7 +572,7 @@
                 ".peer .peertag{position:absolute;top:-15px;left:-2px;"
                 "font:10px/14px sans-serif;color:#fff;padding:0 4px;"
                 "border-radius:3px 3px 3px 0;white-space:nowrap;}"))]
-      [:script {:type "module" :src "/datastar.js"}]
+      [:script {:type "module" :src "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js" #_"/datastar.js"}]
       [:script {:src "/app.js"}]]
      [:body {:data-signals (format (str "{cell:'', v:'', err:'', sel:'', edit:false, r0:0, c0:0, "
                                         "sheet:'%s', sid:'', link:'%s', sharepanel:false, shareact:'', "
@@ -668,6 +668,67 @@
   [req f]
   (hk/->sse-response req {hk/on-open (fn [gen] (f gen) (d*/close-sse! gen))}))
 
+;; --- Safari/WebKit fetch-stream flush (server-side, WebKit-only) ---------
+;; WebKit delivers a fetch() response body to JS in coalesced lumps and holds
+;; the trailing bytes (below an internal threshold) until a LATER, separate
+;; network write arrives — and drops them for good if nothing does. Datastar's
+;; @get stream reads over fetch(), so a collaboration push to a peer that isn't
+;; followed by more traffic never lands in Safari (verified: trailing edit lost
+;; ~40% of the time, even after seconds). Chromium/Firefox stream incrementally
+;; and are unaffected; the editor's own actions answer over one-shot @post
+;; responses that CLOSE (=flush), so only peer broadcasts are affected.
+;;
+;; Padding the push itself does NOT help — same-instant bytes coalesce into the
+;; same held lump (measured: 16 KB appended still lost 4/6). What reliably
+;; triggers delivery is a *time-separated* follow-up write. So a few ms after a
+;; broadcast to a WebKit peer we send a raw SSE comment (ignored by the client
+;; parser — its colon is at column 0): that extra read cycle flushes the push.
+;; ~30 ms is imperceptible yet reliable (0 lost across 24 edits). It is gated by
+;; User-Agent (only WebKit pays) and coalesced to one pending tick per session,
+;; so idle and non-WebKit streams stay completely silent — this is not a
+;; heartbeat.
+(def ^:private webkit-flush-ms 30)
+
+(defonce ^:private flush-pool
+  (java.util.concurrent.Executors/newSingleThreadScheduledExecutor
+    (reify java.util.concurrent.ThreadFactory
+      (newThread [_ r] (doto (Thread. ^Runnable r "saltrim-webkit-flush")
+                         (.setDaemon true))))))
+
+(defonce ^:private flush-pending (java.util.concurrent.ConcurrentHashMap.))
+
+(defn- webkit-ua?
+  "True for WebKit engines (Safari desktop/iOS, iOS browsers) but not
+   Chrome/Chromium/Edge — i.e. the ones whose fetch() SSE buffering needs the
+   flush tick. iOS Chrome (\"CriOS\", no \"Chrome\") is WebKit and matches."
+  [ua]
+  (let [ua (str ua)]
+    (and (str/includes? ua "AppleWebKit")
+         (not (str/includes? ua "Chrome"))
+         (not (str/includes? ua "Chromium")))))
+
+(defn- flush-tick!
+  "Send a raw SSE comment to sid's stream — a time-separated write that flushes
+   WebKit's held fetch buffer. The colon-at-column-0 line is ignored by the
+   Datastar client parser (no DOM/signal effect). The SDK has no comment
+   primitive, so we write the http-kit channel directly, under the gen's lock."
+  [sid]
+  (when-let [g (:gen (@sessions* sid))]
+    (try (d*/lock-sse! g
+           (http/send! (.ch ^starfederation.datastar.clojure.adapter.http_kit.impl.SSEGenerator g)
+                       ": flush\n" false))
+         (catch Throwable _))))
+
+(defn- webkit-flush!
+  "Schedule a flush tick ~webkit-flush-ms after a broadcast to a WebKit peer,
+   coalescing to at most one pending tick per session (so a burst of pushes
+   costs one trailing flush, and idle streams none)."
+  [sid]
+  (when (nil? (.putIfAbsent flush-pending sid Boolean/TRUE))
+    (.schedule flush-pool
+               ^Runnable (fn [] (.remove flush-pending sid) (flush-tick! sid))
+               (long webkit-flush-ms) java.util.concurrent.TimeUnit/MILLISECONDS)))
+
 (defn- patch-inner!
   "Replace inner HTML of `selector` with `html`. Blank `html` (e.g. an empty
    #self / #peers overlay) would make the SDK emit a `datastar-patch-elements`
@@ -726,6 +787,7 @@
       (let [vis (filter #(in-window? (:view s) %) affected)]
         (when (seq vis)
           (try (d*/lock-sse! (:gen s) (d*/patch-elements! (:gen s) (render-cells sh vis (:view s))))
+               (when (:webkit? s) (webkit-flush! sid))
                (catch Throwable _ (reap-session! sid))))))))
 
 ;; --- presence (collaborator cursors + edit locks) ----------------------
@@ -793,6 +855,7 @@
   (doseq [[sid s] @sessions*]
     (when (and (= sheet-id (:sheet s)) (:gen s))
       (try (d*/lock-sse! (:gen s) (patch-inner! (:gen s) "#peers" (peers-html sid sheet-id)))
+           (when (:webkit? s) (webkit-flush! sid))
            (catch Throwable _ (reap-session! sid))))))
 
 (defn- render-window!
@@ -815,6 +878,7 @@
   (doseq [[sid s] @sessions*]
     (when (and (not= sid editor-sid) (= sheet-id (:sheet s)) (:gen s))
       (try (d*/lock-sse! (:gen s) (render-window! (:gen s) sid sheet-id sh (:view s)))
+           (when (:webkit? s) (webkit-flush! sid))
            (catch Throwable _ (reap-session! sid))))))
 
 (defn- locked-by-other?
@@ -1027,21 +1091,23 @@
   [req]
   (with-stream-access req
     (fn [uid sid sheet-id token]
-      (hk/->sse-response req
+      (let [webkit? (webkit-ua? (get-in req [:headers "user-agent"]))]
+       (hk/->sse-response req
         {hk/on-open
          (fn [gen]
            (when (and sid (re-matches sid-re sid))
              ;; reconnect: keep the existing session's view/dims, just swap the
              ;; (dead) generator for the new one. fresh connect: register.
              (ensure-session! sid sheet-id uid token)
-             (swap! sessions* update sid assoc :gen gen)
+             ;; note the engine so collaboration pushes get the WebKit flush tick
+             (swap! sessions* update sid assoc :gen gen :webkit? webkit?)
              ;; flush once so the client sees an established, open stream (an SSE
              ;; that sends nothing looks "finished" -> client reconnect storm).
              (try (d*/patch-signals! gen "{}") (catch Throwable _))
              ;; restore this session's own marker (reconnect) and show it the
              ;; cursors already present (and vice versa).
              (try (patch-inner! gen "#self" (self-html sid sheet-id)) (catch Throwable _))
-             (broadcast-presence! sheet-id)))}))))
+             (broadcast-presence! sheet-id)))})))))
 
 (defn- handle-session-end [req]
   (let [uid (auth/req->uid req)
