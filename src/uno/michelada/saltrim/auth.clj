@@ -133,9 +133,7 @@
   (str cookie-name "=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"))
 
 (defn req->token [req]
-  (some->> (get-in req [:headers "cookie"])
-           (re-find (re-pattern (str "(?:^|;\\s*)" cookie-name "=([a-f0-9]{64})")))
-           second))
+  (some-> req :cookies (get cookie-name) :value))
 
 (defn req->uid
   "The authenticated user id for a request, or nil."

@@ -15,6 +15,9 @@
   (:require [clojure.string :as str]
             [clojure.java.io :as io]
             [org.httpkit.server :as http]
+            [ring.middleware.params :refer [wrap-params]]
+            [ring.middleware.keyword-params :refer [wrap-keyword-params]]
+            [ring.middleware.cookies :refer [wrap-cookies]]
             [hiccup2.core :as h]
             [jsonista.core :as json]
             [uno.michelada.saltrim.addr :as addr]
@@ -24,31 +27,17 @@
             [uno.michelada.saltrim.sheet :as sheet]
             [uno.michelada.saltrim.store :as store]
             [uno.michelada.saltrim.util :as util :refer [timed]]
+            [uno.michelada.saltrim.constants :refer [CW RH GUT HDR
+                                                  MAX-COLS MAX-ROWS
+                                                  WIN-COLS WIN-ROWS
+                                                  MIN-COLS MIN-ROWS
+                                                  BUF-COLS BUF-ROWS
+                                                  OVER BAR]]
             [mount.core :refer [defstate]]
             [starfederation.datastar.clojure.api :as d*]
             [starfederation.datastar.clojure.adapter.http-kit :as hk]
             [starfederation.datastar.clojure.adapter.common :as ac])
   (:gen-class))
-
-;; --- geometry -----------------------------------------------------------
-
-(def ^:private CW 112)            ; cell width  px
-(def ^:private RH 26)             ; cell height px
-(def ^:private GUT 48)            ; row-header gutter px
-(def ^:private HDR 26)            ; col-header height px
-(def ^:private MAX-COLS 16384)    ; hard cap for clamping jumps
-;; ~600k keeps the spacer div under Firefox's ~17.9M px element limit
-;; (600000 * 26 = 15.6M px). See TECHDEBT.md — the giant-spacer scroll model
-;; is the real ceiling; want a logical scrollbar that needs no huge div.
-(def ^:private MAX-ROWS 600000)
-(def ^:private WIN-COLS 16)       ; window size (+overscan)
-(def ^:private WIN-ROWS 34)
-(def ^:private OVER 2)            ; overscan cells
-(def ^:private MIN-COLS 26)       ; spacer never smaller than this
-(def ^:private MIN-ROWS 100)
-(def ^:private BUF-COLS 6)        ; scrollable buffer past used/visible range
-(def ^:private BUF-ROWS 30)
-(def ^:private BAR 12)            ; custom scrollbar thickness px
 
 ;; Logical scroll: no giant spacer. Cells/headers are positioned WINDOW-RELATIVE
 ;; (cell at index i in the window sits at (i - base)*CW), and /app.js translates
@@ -226,7 +215,7 @@
 (defn- used-max
   "[max-ci max-ri] over non-empty cells (-1 if none)."
   [sh]
-  (reduce (fn [[cm rm] a] (let [{:keys [ci ri]} (addr/parse a)]
+  (reduce (fn [[cm rm] a] (let [{:keys [ci ri]} (addr/parse-addr a)]
                             [(max cm ci) (max rm ri)]))
           [-1 -1] (sheet/cells sh)))
 
@@ -243,7 +232,7 @@
     [(axis-x sh cols) (axis-y sh rows)]))
 
 (defn- in-window? [{:keys [r0 c0]} addr]
-  (let [{:keys [ci ri]} (addr/parse addr)]
+  (let [{:keys [ci ri]} (addr/parse-addr addr)]
     (and (<= (- (long c0) OVER) ci (+ (long c0) WIN-COLS))
          (<= (- (long r0) OVER) ri (+ (long r0) WIN-ROWS)))))
 
@@ -310,7 +299,7 @@
 
 (defn- cells-html [sh cis ris]
   (let [cb (first cis) rb (first ris)]
-    (str (h/html (for [ri ris ci cis] (cell-input sh (addr/make ci ri) ci ri cb rb))))))
+    (str (h/html (for [ri ris ci cis] (cell-input sh (addr/make-addr ci ri) ci ri cb rb))))))
 
 (defn- colhead-html [sh cis]
   (let [xb (axis-x sh (first cis))]
@@ -366,9 +355,11 @@
             ;; presence declaratively (@post '/presence'); the server renders the
             ;; #self and #peers overlays. Keyboard nav + editor live in /app.js.
             :data-on:click
-            (str "evt.target.classList.contains('cell') && "
-                 "($sel=evt.target.id.slice(2), $v=(evt.target.dataset.raw||''), "
-                 "$edit=false, syncStyle(evt.target.id.slice(2)), @post('/presence'))")
+            (str "const t=env.target, ds=t.dataset;"
+                 "t.classList.contains('cell') && "
+                 "($sel=evt.target.id.slice(2), $v=ds.raw||'', "
+                 "$edit=false, $stylesrc=json_parse_safe(ds.sty), "
+                 "@post('/presence'))")
             :data-on:dblclick
             "evt.target.classList.contains('cell') && startEdit(evt.target.id.slice(2))"
             :style "position:relative;height:78vh;border:1px solid #ccc;overflow:hidden;"}
@@ -408,14 +399,27 @@
        ;; keydown/blur/dblclick. data-bind:v feeds the value into $v; commit posts
        ;; /cell via #celltrigger, Esc cancels.
        [:div {:id "editlayer" :style "position:absolute;left:0;top:0;will-change:transform;"}
-        [:input {:id "editor" :data-bind:v "" :style "display:none;"}]]]
+        [:input {:id "editor"
+                 :data-bind:v nil
+                 :data-on:keydown "editor-event-keydown(evt)"
+                 :data-on:blur "editor-event-commit-edit($edit), $edit = false"
+                 :data-on:dblclick "editor-event-commit-edit($edit), $edit = false"
+
+                 :data-on:commit-edit "editor-event-commit-edit($edit), $edit = false"
+                 :data-on:cancel-edit "editor-event-cancel-edit($edit), $edit = false"
+
+                 :data-style:display "$edit ? 'block' : 'none'"}]]]
       ;; custom scrollbars
       [:div {:id "vbar" :style (format (str "position:absolute;right:0;top:%dpx;bottom:%dpx;width:%dpx;"
                                             "background:#f0f0f0;z-index:5;") HDR BAR BAR)}
-       [:div {:id "vthumb" :style "position:absolute;left:1px;right:1px;top:0;height:30px;background:#bbb;border-radius:6px;"}]]
+       [:div {:id "vthumb"
+              :style "position:absolute;left:1px;right:1px;top:0;height:30px;background:#bbb;border-radius:6px;"
+              :data-on:mousedown "dragThumb(evt, true)"}]]
       [:div {:id "hbar" :style (format (str "position:absolute;left:%dpx;bottom:0;right:%dpx;height:%dpx;"
                                             "background:#f0f0f0;z-index:5;") GUT BAR BAR)}
-       [:div {:id "hthumb" :style "position:absolute;top:1px;bottom:1px;left:0;width:30px;background:#bbb;border-radius:6px;"}]]
+       [:div {:id "hthumb"
+              :style "position:absolute;top:1px;bottom:1px;left:0;width:30px;background:#bbb;border-radius:6px;"
+              :data-on:mousedown "dragThumb(evt, false)"}]]
       ;; single moving guide line shown while dragging a header grip
       [:div {:id "rzguide"}]])))
 
@@ -575,20 +579,35 @@
                 "border-radius:3px 3px 3px 0;white-space:nowrap;}"))]
       [:script {:type "module" :src "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js" #_"/datastar.js"}]
       [:script {:src "/app.js"}]]
-     [:body {:data-signals (format (str "{cell:'', v:'', err:'', sel:'', edit:false, r0:0, c0:0, "
-                                        "sheet:'%s', sid:'', link:'%s', sharepanel:false, shareact:'', "
-                                        "plevel:'', gtarget:'', glevel:'read-write', grantee:'', "
-                                        "styleprop:'bg', stylesrc:'', rzcmd:'', "
-                                        "help:false}")
-                                   storage-id (or link-token ""))
+     [:body {:data-signals:cell "''"
+             :data-signals:v "''"
+             :data-signals:err "''"
+             :data-signals:sel "''"
+             :data-signals:edit "false"
+             :data-signals:r0 "0"
+             :data-signals:c0 "0"
+             :data-signals:sheet (format "'%s'" storage-id)
+             :data-signals:sid (format "'%s'" (random-uuid))
+             :data-signals:link (format "'%s'" (or link-token ""))
+             :data-signals:sharepanel "false"
+             :data-signals:shareact "''"
+             :data-signals:plevel "''"
+             :data-signals:gtarget "''"
+             :data-signals:glevel "'read-write'"
+             :data-signals:grantee "''"
+             :data-signals:styleprop "'bg'"
+             :data-signals:stylesrc "''"
+             :data-signals:rzcmd "''"
+             :data-signals:help "false"
+             
              :style "font-family:sans-serif;margin:0;padding:.6rem;"}
       ;; hidden input carrying the session id into $sid, and a hidden trigger
       ;; /app.js clicks to open the persistent collaboration stream via Datastar
       ;; (so pushed patches are applied). $sid/$sheet go in the URL.
-      [:input {:id "sidbox" :data-bind:sid "" :style "display:none;"}]
-      [:button {:id "streamtrigger"
-                :data-on:click "@get('/stream?sid='+$sid+'&s='+$sheet+'&t='+$link)"
-                :style "display:none;"} ""]
+      #_[:input {:id "sidbox" :data-bind:sid "" :style "display:none;"}]
+      #_[:button {:id "streamtrigger"
+                  :data-effect "@get('/stream?sid='+$sid+'&s='+$sheet+'&t='+$link)"
+                  :style "display:none;"} ""]
       [:div {:id "toast" :data-show "$err != ''" :data-text "$err"
              :data-on:click "$err=''"
              :style (str "position:fixed;top:1rem;right:1rem;max-width:26rem;background:#c0392b;"
@@ -631,7 +650,8 @@
       ;; value, e.g. =(if (> $val 100) "tomato" "white")
       [:div {:class "toolrow"}
        [:select {:id "stylepropbox" :class "tool" :data-bind:styleprop ""
-                 :data-on:change "syncStyle($sel)"
+                 :data-on:change (str "const ds=document.getElementById('c_'+$sel).dataset;"
+                                      "$v=ds.raw || '',$stylesrc=json_parse_safe(ds.sty)[$styleprop] || ''")
                  :title "style / format property of the selected cell"}
         (for [p (concat (keys style-css) value-props)] [:option {:value (name p)} (name p)])]
        [:input {:id "stylesrcbox" :class "tool mono" :data-bind:stylesrc ""
@@ -659,7 +679,23 @@
       [:input {:id "rzcmdbox" :data-bind:rzcmd "" :style "display:none;"}]
       [:button {:id "sizetrigger" :data-on:click "@post('/size')" :style "display:none;"} ""]
       ;; logical-scroll viewport (custom wheel + scrollbars in /app.js)
-      (grid-layers sh {:r0 0 :c0 0})]])))
+      (grid-layers sh {:r0 0 :c0 0})
+
+      ;; kind of control div
+      [:div {:data-effect "@get('/stream')"
+
+             :data-on:cell-trigger__window   "$cell=$sel, @post('/cell')"
+             :data-on:edit-trigger__window   "$edit=true, @post('/presence')"
+             :data-on:select-trigger__window "$edit=false, @post('/presence')"
+             :data-on:view-trigger__window   "$r0=evt.details.r0 || $r0, $c0=evt.details.c0 || $c0, @post('/view')"
+             :data-on:set-sel-value__window  "$sel = evt.details.addr || 'A1'"
+
+             :data-on:jump__window
+             (str "$sel=evt.details.addr || 'A1'; "
+                  "const ds=document.getElementById('c_'+$sel).dataset; "
+                  "$v=ds.raw || '',$stylesrc=json_parse_safe(ds.sty)[$styleprop] || ''")
+
+             :style "display:none;"} ""]]])))
 
 ;; --- SSE (official Datastar SDK) ----------------------------------------
 
@@ -797,7 +833,7 @@
   "Cell-input HTML for addrs, positioned window-relative to view (cbase,rbase)."
   [sh addrs view]
   (let [[cb rb] (view-base view)]
-    (apply str (map #(let [{:keys [ci ri]} (addr/parse %)]
+    (apply str (map #(let [{:keys [ci ri]} (addr/parse-addr %)]
                        (str (h/html (cell-input sh % ci ri cb rb))))
                     addrs))))
 
@@ -820,7 +856,7 @@
   "Overlay div for one peer's cursor, positioned window-relative to `view`. An
    editing peer's marker captures pointer events (locks the cell beneath)."
   [sh view {:keys [cursor editing color uname]}]
-  (let [{:keys [ci ri]} (addr/parse cursor)
+  (let [{:keys [ci ri]} (addr/parse-addr cursor)
         [cb rb] (view-base view)
         editing? (= editing cursor)
         tag (or uname "•")
@@ -863,7 +899,7 @@
         a    (:cursor s)
         sh   (:sh (@sheets* sheet-id))]
     (if (and s sh (= sheet-id (:sheet s)) a (in-window? view a))
-      (let [{:keys [ci ri]} (addr/parse a)
+      (let [{:keys [ci ri]} (addr/parse-addr a)
             [cb rb] (view-base view)]
         (str (h/html
               [:div {:class (str "selfcell" (when (= (:editing s) a) " editing"))
@@ -965,8 +1001,9 @@
    long-lived SSE response; otherwise a plain 403."
   [req f]
   (let [uid      (auth/req->uid req)
-        sid      (qparam req "sid")
-        sheet-id (qparam req "s")
+        sig      (read-signals req)
+        sid      (:sid sig)
+        sheet-id (:sheet sig)
         token    (not-empty (qparam req "t"))]
     (if-not (accessible-rec uid sheet-id token)
       {:status 403 :body "no access"}
@@ -998,7 +1035,7 @@
       (if (not= :read-write (:level rec))
         (signals! gen {:err "read-only access — you can't edit this sheet"})
         (let [sh (:sh rec)]
-          (when (addr/valid? cell)
+          (when (addr/valid-addr?addr?addr? cell)
             (locking edit-lock
             (try
               (when (locked-by-other? sid sheet-id cell)
@@ -1024,7 +1061,7 @@
           (signals! gen {:err "read-only access — you can't edit this sheet"})
           (not (prop-allowed? prop))
           (signals! gen {:err (str "unknown style property: " (:styleprop sig))})
-          (not (addr/valid? cell))
+          (not (addr/valid-addr?addr?addr? cell))
           (signals! gen {:err "select a cell first"})
           :else
           (locking edit-lock
@@ -1093,10 +1130,10 @@
       (ensure-session! sid sheet-id uid (:token rec))
       (let [can-write? (= :read-write (:level rec))]
         (swap! sessions* update sid assoc
-               :cursor  (when (addr/valid? sel) sel)
+               :cursor  (when (addr/valid-addr?addr?addr? sel) sel)
                ;; a read-only viewer may move their cursor but never hold an
                ;; edit lock (which would block writers on a cell they can't edit)
-               :editing (when (and edit can-write? (addr/valid? sel)) sel)))
+               :editing (when (and edit can-write? (addr/valid-addr?addr?addr? sel)) sel)))
       ;; peers' #peers via their persistent streams; this session's #self via
       ;; the one-shot @post response (the gen this gate opened).
       (broadcast-presence! sheet-id)
@@ -1115,6 +1152,15 @@
   [req]
   (with-stream-access req
     (fn [uid sid sheet-id token]
+      (println "signals:" (as-> req $
+                                (:query-string $)
+                                (str/split $ #"&")
+                                (filter #(str/starts-with? % "datastar=") $)
+                                (first $)
+                                (str/split $ #"=")
+                                (second $)
+                                (java.net.URLDecoder/decode $ "UTF-8")
+                                (json/read-value $ json/keyword-keys-object-mapper)))
       (let [webkit? (webkit-ua? (get-in req [:headers "user-agent"]))]
        (hk/->sse-response req
         (sse-opts
@@ -1441,7 +1487,11 @@
 
 (defstate server
   :start (timed (str "http server :" (port))
-                (let [stop (http/run-server #'app {:port (port)})]
+           (let [stop (http/run-server (-> #'app
+                                           wrap-params
+                                           wrap-keyword-params
+                                           wrap-cookies)
+                                       {:port (port)})]
                   (util/log "  serving http://localhost:" (port) "·"
                             (if-let [ps (seq (keys (auth/providers)))]
                               (str "auth: " (str/join ", " (map name ps))) "auth: none")
@@ -1459,3 +1509,10 @@
    (Thread. ^Runnable (requiring-resolve 'uno.michelada.saltrim.system/stop!)))
   ((requiring-resolve 'uno.michelada.saltrim.system/start!))
   @(promise))
+
+
+(comment
+
+  (letfn [(f [x] (println x f))])
+
+  )

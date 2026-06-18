@@ -12,7 +12,9 @@
   [^String col]
   (dec
    (reduce (fn [acc ch]
-             (+ (* acc 26) (- (int (Character/toUpperCase ch)) (int \A) -1)))
+             (+ (* acc 26) (- (int #?(:clj  (Character/toUpperCase ch)
+                                      :cljs (.toUpperCase ch)))
+                              (int \A) -1)))
            0 col)))
 
 (defn idx->col
@@ -28,7 +30,8 @@
   "\"AAB1234\" -> {:col \"AAB\" :row 1234 :ci <0-based> :ri <0-based>}."
   [addr]
   (let [[_ col row] (re-matches #"([A-Za-z]+)([0-9]+)" addr)
-        row-n (Long/parseLong row)]
+        row-n #?(:clj  (Long/parseLong row)
+                 :cljs (js/parseInt row))]
     {:col col :row row-n :ci (col->idx col) :ri (dec row-n)}))
 
 (defn make
