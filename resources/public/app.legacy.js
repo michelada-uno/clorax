@@ -400,7 +400,8 @@ function scheduleReopen() {
   _streamTimer = setTimeout(function () { _streamTimer = null; openStream(); }, delay);
 }
 
-document.addEventListener('datastar-fetch', function (e) {
+document.addEventListener('datastar---fetch', function (e) {
+    console.log('datastar-fetch', e.detail);
   const d = e.detail || {};
   // (geometry re-render is handled by the #meta MutationObserver in initScroll,
   // which also covers /size broadcasts on a collaborator's stream.)
@@ -414,5 +415,5 @@ document.addEventListener('datastar-fetch', function (e) {
 window.addEventListener('pagehide', function () { window.__unloading = true; });
 
 // fire after Datastar is ready so the $sid signal binding is live
-document.addEventListener('datastar-ready', initSession);
+// document.addEventListener('datastar-ready', initSession);
 

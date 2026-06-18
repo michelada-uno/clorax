@@ -15,6 +15,9 @@
   (:require [clojure.string :as str]
             [clojure.java.io :as io]
             [org.httpkit.server :as http]
+            [ring.middleware.params :refer [wrap-params]]
+            [ring.middleware.keyword-params :refer [wrap-keyword-params]]
+            [ring.middleware.cookies :refer [wrap-cookies]]
             [hiccup2.core :as h]
             [jsonista.core :as json]
             [uno.michelada.saltrim.addr :as addr]
@@ -24,31 +27,17 @@
             [uno.michelada.saltrim.sheet :as sheet]
             [uno.michelada.saltrim.store :as store]
             [uno.michelada.saltrim.util :as util :refer [timed]]
+            [uno.michelada.saltrim.constants :refer [CW RH GUT HDR
+                                                     MAX-COLS MAX-ROWS
+                                                     WIN-COLS WIN-ROWS
+                                                     MIN-COLS MIN-ROWS
+                                                     BUF-COLS BUF-ROWS
+                                                     OVER BAR]]
             [mount.core :refer [defstate]]
             [starfederation.datastar.clojure.api :as d*]
             [starfederation.datastar.clojure.adapter.http-kit :as hk]
             [starfederation.datastar.clojure.adapter.common :as ac])
   (:gen-class))
-
-;; --- geometry -----------------------------------------------------------
-
-(def ^:private CW 112)            ; cell width  px
-(def ^:private RH 26)             ; cell height px
-(def ^:private GUT 48)            ; row-header gutter px
-(def ^:private HDR 26)            ; col-header height px
-(def ^:private MAX-COLS 16384)    ; hard cap for clamping jumps
-;; ~600k keeps the spacer div under Firefox's ~17.9M px element limit
-;; (600000 * 26 = 15.6M px). See TECHDEBT.md — the giant-spacer scroll model
-;; is the real ceiling; want a logical scrollbar that needs no huge div.
-(def ^:private MAX-ROWS 600000)
-(def ^:private WIN-COLS 16)       ; window size (+overscan)
-(def ^:private WIN-ROWS 34)
-(def ^:private OVER 2)            ; overscan cells
-(def ^:private MIN-COLS 26)       ; spacer never smaller than this
-(def ^:private MIN-ROWS 100)
-(def ^:private BUF-COLS 6)        ; scrollable buffer past used/visible range
-(def ^:private BUF-ROWS 30)
-(def ^:private BAR 12)            ; custom scrollbar thickness px
 
 ;; Logical scroll: no giant spacer. Cells/headers are positioned WINDOW-RELATIVE
 ;; (cell at index i in the window sits at (i - base)*CW), and /app.js translates
@@ -159,9 +148,6 @@
 
 (defn- session-view [sid] (get-in @sessions* [sid :view] {:r0 0 :c0 0}))
 (defn- set-session-view! [sid v] (when (@sessions* sid) (swap! sessions* assoc-in [sid :view] v)))
-(defn- session-dims [sid] (get-in @sessions* [sid :dims]))
-(defn- set-session-dims! [sid d] (when (@sessions* sid) (swap! sessions* assoc-in [sid :dims] d)))
-(defn- sheet-of [sid] (get-in @sessions* [sid :sheet]))
 
 (defn- sessions-on [sheet-id]
   (count (filter #(= sheet-id (:sheet %)) (vals @sessions*))))
@@ -365,12 +351,16 @@
             ;; double-click = open the floating editor (/app.js). Selection posts
             ;; presence declaratively (@post '/presence'); the server renders the
             ;; #self and #peers overlays. Keyboard nav + editor live in /app.js.
+            ;; single click selects (declarative): set $sel, mirror the cell's
+            ;; value + chosen-style source into the bars, drop the edit flag, post
+            ;; the cursor. Double-click to edit is handled in app.cljs (it has to
+            ;; position the floating editor — imperative work).
             :data-on:click
-            (str "evt.target.classList.contains('cell') && "
-                 "($sel=evt.target.id.slice(2), $v=(evt.target.dataset.raw||''), "
-                 "$edit=false, syncStyle(evt.target.id.slice(2)), @post('/presence'))")
-            :data-on:dblclick
-            "evt.target.classList.contains('cell') && startEdit(evt.target.id.slice(2))"
+            (str "const t=evt.target;"
+                 "t.classList.contains('cell') && "
+                 "($sel=t.id.slice(2), $v=t.dataset.raw||'',"
+                 "$stylesrc=t.dataset.sty?(JSON.parse(t.dataset.sty)[$styleprop]||''):'',"
+                 "$edit=false, @post('/presence'))")
             :style "position:relative;height:78vh;border:1px solid #ccc;overflow:hidden;"}
       (h/raw (meta-html sh r0 c0))
       ;; corner
@@ -403,19 +393,27 @@
        ;; them to block the cell beneath.
        [:div {:id "peers" :style (str "position:absolute;left:0;top:0;z-index:3;"
                                       "pointer-events:none;will-change:transform;")}]
-       ;; the single floating editor, translated with #cells; /app.js positions +
-       ;; shows it over the active cell on Enter/double-click and wires its
-       ;; keydown/blur/dblclick. data-bind:v feeds the value into $v; commit posts
-       ;; /cell via #celltrigger, Esc cancels.
+       ;; the single floating editor, translated with #cells. app.cljs positions
+       ;; it over the active cell and moves focus in; everything else is
+       ;; declarative: data-bind:v shares $v with the formula bar, data-show
+       ;; reveals it on $edit, Enter/blur commit (@post '/cell' + drop the edit
+       ;; lock), Esc cancels. __stop keeps these keys from the document-level nav.
        [:div {:id "editlayer" :style "position:absolute;left:0;top:0;will-change:transform;"}
-        [:input {:id "editor" :data-bind:v "" :style "display:none;"}]]]
+        [:input {:id "editor" :data-bind:v "" :data-show "$edit"
+                 :data-on:keydown__stop__prevent
+                 (str "evt.key==='Enter' ? ($cell=$sel,@post('/cell'),$edit=false,@post('/presence'))"
+                      " : evt.key==='Escape' ? ($edit=false,@post('/presence')) : null")
+                 :data-on:blur "$edit && ($cell=$sel,@post('/cell'),$edit=false,@post('/presence'))"
+                 :style "display:none;"}]]]
       ;; custom scrollbars
       [:div {:id "vbar" :style (format (str "position:absolute;right:0;top:%dpx;bottom:%dpx;width:%dpx;"
                                             "background:#f0f0f0;z-index:5;") HDR BAR BAR)}
-       [:div {:id "vthumb" :style "position:absolute;left:1px;right:1px;top:0;height:30px;background:#bbb;border-radius:6px;"}]]
+       [:div {:id "vthumb"
+              :style "position:absolute;left:1px;right:1px;top:0;height:30px;background:#bbb;border-radius:6px;"}]]
       [:div {:id "hbar" :style (format (str "position:absolute;left:%dpx;bottom:0;right:%dpx;height:%dpx;"
                                             "background:#f0f0f0;z-index:5;") GUT BAR BAR)}
-       [:div {:id "hthumb" :style "position:absolute;top:1px;bottom:1px;left:0;width:30px;background:#bbb;border-radius:6px;"}]]
+       [:div {:id "hthumb"
+              :style "position:absolute;top:1px;bottom:1px;left:0;width:30px;background:#bbb;border-radius:6px;"}]]
       ;; single moving guide line shown while dragging a header grip
       [:div {:id "rzguide"}]])))
 
@@ -502,8 +500,11 @@
            (str icon " " (if (str/blank? name) nm name))])])]))
 
 (defn- page [sh storage-id sname uid link-token]
-  (str
-   "<!doctype html>"
+  ;; one session id seeds BOTH $sid (sent on /stream, registers the session) and
+  ;; #ctl's data-sid (read by the unload beacon) — they must be the same value.
+  (let [sid (str (random-uuid))]
+   (str
+    "<!doctype html>"
    (h/html
     [:html
      [:head
@@ -575,20 +576,28 @@
                 "border-radius:3px 3px 3px 0;white-space:nowrap;}"))]
       [:script {:type "module" :src "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js" #_"/datastar.js"}]
       [:script {:src "/app.js"}]]
-     [:body {:data-signals (format (str "{cell:'', v:'', err:'', sel:'', edit:false, r0:0, c0:0, "
-                                        "sheet:'%s', sid:'', link:'%s', sharepanel:false, shareact:'', "
-                                        "plevel:'', gtarget:'', glevel:'read-write', grantee:'', "
-                                        "styleprop:'bg', stylesrc:'', rzcmd:'', "
-                                        "help:false}")
-                                   storage-id (or link-token ""))
+     [:body {:data-signals:cell "''"
+             :data-signals:v "''"
+             :data-signals:err "''"
+             :data-signals:sel "''"
+             :data-signals:edit "false"
+             :data-signals:r0 "0"
+             :data-signals:c0 "0"
+             :data-signals:sheet (format "'%s'" storage-id)
+             :data-signals:sid (format "'%s'" sid)
+             :data-signals:link (format "'%s'" (or link-token ""))
+             :data-signals:sharepanel "false"
+             :data-signals:shareact "''"
+             :data-signals:plevel "''"
+             :data-signals:gtarget "''"
+             :data-signals:glevel "'read-write'"
+             :data-signals:grantee "''"
+             :data-signals:styleprop "'bg'"
+             :data-signals:stylesrc "''"
+             :data-signals:rzcmd "''"
+             :data-signals:help "false"
+             
              :style "font-family:sans-serif;margin:0;padding:.6rem;"}
-      ;; hidden input carrying the session id into $sid, and a hidden trigger
-      ;; /app.js clicks to open the persistent collaboration stream via Datastar
-      ;; (so pushed patches are applied). $sid/$sheet go in the URL.
-      [:input {:id "sidbox" :data-bind:sid "" :style "display:none;"}]
-      [:button {:id "streamtrigger"
-                :data-on:click "@get('/stream?sid='+$sid+'&s='+$sheet+'&t='+$link)"
-                :style "display:none;"} ""]
       [:div {:id "toast" :data-show "$err != ''" :data-text "$err"
              :data-on:click "$err=''"
              :style (str "position:fixed;top:1rem;right:1rem;max-width:26rem;background:#c0392b;"
@@ -613,8 +622,9 @@
         [:button {:class "btn"} "sign out"]]]
       ;; ── toolbar row 2: cell reference + formula bar ────────────────────
       [:div {:class "toolrow"}
+       ;; address box: $sel via data-bind; Enter jumps (app.cljs scrolls there +
+       ;; selects). The keydown listener is attached in app.cljs (a scroll action).
        [:input {:id "addrbox" :class "tool mono" :data-bind:sel "" :placeholder "A1"
-                :data-on:keydown "evt.key==='Enter' && jump($sel)"
                 :style "width:5rem;text-align:center;"}]
        ;; editing via the formula bar still drives presence on the SELECTED cell
        ;; (so it shows the marching-ants self marker and locks it for peers).
@@ -631,35 +641,45 @@
       ;; value, e.g. =(if (> $val 100) "tomato" "white")
       [:div {:class "toolrow"}
        [:select {:id "stylepropbox" :class "tool" :data-bind:styleprop ""
-                 :data-on:change "syncStyle($sel)"
+                 :data-on:change
+                 (str "const c=document.getElementById('c_'+$sel);"
+                      "c && ($v=c.dataset.raw||'',"
+                      "$stylesrc=c.dataset.sty?(JSON.parse(c.dataset.sty)[$styleprop]||''):'')")
                  :title "style / format property of the selected cell"}
         (for [p (concat (keys style-css) value-props)] [:option {:value (name p)} (name p)])]
        [:input {:id "stylesrcbox" :class "tool mono" :data-bind:stylesrc ""
                 :placeholder "color / mask / =formula (use $val) — Enter to apply"
                 :data-on:keydown "evt.key==='Enter' && ($cell=$sel, @post('/style'))"
                 :style "flex:1;"}]]
-      ;; hidden r0/c0 carriers (/app.js sets these then clicks #viewtrigger so
-      ;; Datastar @post /view and applies the returned window patch).
-      [:input {:id "r0box" :data-bind:r0 "" :style "display:none;"}]
-      [:input {:id "c0box" :data-bind:c0 "" :style "display:none;"}]
-      [:button {:id "viewtrigger" :data-on:click "@post('/view')" :style "display:none;"} ""]
-      ;; hidden triggers /app.js clicks to drive Datastar actions (it can't set
-      ;; signals directly): selecting (cursor presence), starting an edit (lock),
-      ;; and committing a cell value. $sel comes from #addrbox, $v from #editor.
-      [:button {:id "selecttrigger" :data-on:click "$edit=false, @post('/presence')"
-                :style "display:none;"} ""]
-      [:button {:id "edittrigger" :data-on:click "$edit=true, @post('/presence')"
-                :style "display:none;"} ""]
-      [:button {:id "celltrigger" :data-on:click "$cell=$sel, @post('/cell')"
-                :style "display:none;"} ""]
-      ;; column/row resize: /app.js fills ONE atomic command "axis:idx:size" from
-      ;; a header grip drag, then clicks #sizetrigger to POST /size. A single
-      ;; signal (not three) so a stray partial update can't run the wrong axis or
-      ;; send a 0 — the server also validates and ignores anything malformed.
-      [:input {:id "rzcmdbox" :data-bind:rzcmd "" :style "display:none;"}]
-      [:button {:id "sizetrigger" :data-on:click "@post('/size')" :style "display:none;"} ""]
       ;; logical-scroll viewport (custom wheel + scrollbars in /app.js)
-      (grid-layers sh {:r0 0 :c0 0})]])))
+      (grid-layers sh {:r0 0 :c0 0})
+
+      ;; ── client ⇆ server bridge (no hidden trigger buttons) ─────────────
+      ;; app.cljs does the imperative work (scroll / edit / resize / keyboard)
+      ;; and, when the server must hear about it, dispatches a `sr-*` CustomEvent
+      ;; on window; these declarative handlers turn each into the Datastar action,
+      ;; pulling the carried data off evt.detail. The persistent collaboration
+      ;; stream lives on its OWN element (#streamer) so app.cljs can pick its
+      ;; datastar-fetch lifecycle apart from the @posts for reconnect.
+      [:div {:id "streamer" :data-on:sr-open__window "@get('/stream')"
+             :style "display:none;"} ""]
+      [:div {:id "ctl" :data-sid sid :style "display:none;"
+             :data-on:sr-view__window "$r0=evt.detail.r0, $c0=evt.detail.c0, @post('/view')"
+             :data-on:sr-size__window "$rzcmd=evt.detail.cmd, @post('/size')"
+             ;; commit an in-progress edit (app.cljs fires this before a resize
+             ;; drag, whose preventDefault would otherwise swallow the blur)
+             :data-on:sr-commit__window "$edit && ($cell=$sel, @post('/cell'), $edit=false, @post('/presence'))"
+             ;; select: move cursor + mirror the cell's value/style into the bars
+             :data-on:sr-select__window
+             (str "const c=document.getElementById('c_'+evt.detail.addr);"
+                  "$sel=evt.detail.addr; $v=c?(c.dataset.raw||''):'';"
+                  "$stylesrc=c&&c.dataset.sty?(JSON.parse(c.dataset.sty)[$styleprop]||''):'';"
+                  "$edit=false; @post('/presence')")
+             ;; start editing: load the cell's source into $v + take the edit lock
+             :data-on:sr-edit__window
+             (str "const c=document.getElementById('c_'+evt.detail.addr);"
+                  "$sel=evt.detail.addr; $v=c?(c.dataset.raw||''):'';"
+                  "$edit=true; @post('/presence')")} ""]]]))))
 
 ;; --- SSE (official Datastar SDK) ----------------------------------------
 
@@ -960,14 +980,16 @@
       (sse req (fn [gen] (f uid sheet-id rec sig gen))))))
 
 (defn- with-stream-access
-  "The persistent /stream GET: identity + sheet come from query params (not
-   signals). On success call (f uid sid sheet-id) — which returns its OWN
-   long-lived SSE response; otherwise a plain 403."
+  "The persistent /stream GET. It is opened with Datastar's @get, so identity +
+   sheet + link token all ride in the request SIGNALS ($sid/$sheet/$link), not
+   the URL path. On success call (f uid sid sheet-id token) — which returns its
+   OWN long-lived SSE response; otherwise a plain 403."
   [req f]
   (let [uid      (auth/req->uid req)
-        sid      (qparam req "sid")
-        sheet-id (qparam req "s")
-        token    (not-empty (qparam req "t"))]
+        sig      (read-signals req)
+        sid      (:sid sig)
+        sheet-id (:sheet sig)
+        token    (not-empty (str (:link sig)))]
     (if-not (accessible-rec uid sheet-id token)
       {:status 403 :body "no access"}
       (f uid sid sheet-id token))))
@@ -1441,7 +1463,11 @@
 
 (defstate server
   :start (timed (str "http server :" (port))
-                (let [stop (http/run-server #'app {:port (port)})]
+           (let [stop (http/run-server (-> #'app
+                                           wrap-params
+                                           wrap-keyword-params
+                                           wrap-cookies)
+                                       {:port (port)})]
                   (util/log "  serving http://localhost:" (port) "·"
                             (if-let [ps (seq (keys (auth/providers)))]
                               (str "auth: " (str/join ", " (map name ps))) "auth: none")

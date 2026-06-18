@@ -20,7 +20,8 @@
   (let [t0 (System/currentTimeMillis)
         r  (mount/start)]
     (util/log "ready —" (str (- (System/currentTimeMillis) t0) " ms total ·")
-              (pr-str (:started r)))
+              (pr-str (:started r))
+              (println))
     r))
 
 (defn stop!
