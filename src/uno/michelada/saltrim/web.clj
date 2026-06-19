@@ -168,7 +168,8 @@
                               :dims nil :last-seen (now)
                               :uid uid :token token
                               :uname (or (:name (auth/user-info uid)) uid)
-                              :color (color-for sid) :cursor nil :editing nil}))
+                              :color (color-for sid) :cursor nil :editing nil
+                              :editdef nil}))   ; chunk id this session is editing (def lock)
 
 (defn- touch! [sid] (when (@sessions* sid) (swap! sessions* assoc-in [sid :last-seen] (now))))
 
@@ -187,7 +188,7 @@
         (when token (swap! sessions* assoc-in [sid :token] token))))
     (touch! sid)))
 
-(declare close-gen! broadcast-presence!)
+(declare close-gen! broadcast-presence! broadcast-deflib!)
 (defn- reap-session!
   "Drop a session: close its push stream and unload the sheet if it was last."
   [sid]
@@ -195,9 +196,11 @@
     (close-gen! s)
     (swap! sessions* dissoc sid)
     (unload-sheet! (:sheet s))
-    ;; the departed cursor must disappear from peers still on the sheet
+    ;; the departed cursor must disappear from peers still on the sheet; and any
+    ;; definition lock it held must release for everyone else
     (when (pos? (sessions-on (:sheet s)))
-      (broadcast-presence! (:sheet s)))))
+      (broadcast-presence! (:sheet s))
+      (broadcast-deflib! (:sheet s)))))
 
 (defn- sweep! []
   (let [cutoff (- (now) SESSION-TTL-MS)]
@@ -397,12 +400,14 @@
        ;; it over the active cell and moves focus in; everything else is
        ;; declarative: data-bind:v shares $v with the formula bar, data-show
        ;; reveals it on $edit, Enter/blur commit (@post '/cell' + drop the edit
-       ;; lock), Esc cancels. __stop keeps these keys from the document-level nav.
+       ;; lock), Esc cancels. preventDefault is INLINE for Enter/Esc only — a
+       ;; `__prevent` MODIFIER fires on every keydown and would block all typing.
+       ;; `__stop` keeps these keys from the document-level nav handler.
        [:div {:id "editlayer" :style "position:absolute;left:0;top:0;will-change:transform;"}
         [:input {:id "editor" :data-bind:v "" :data-show "$edit"
-                 :data-on:keydown__stop__prevent
-                 (str "evt.key==='Enter' ? ($cell=$sel,@post('/cell'),$edit=false,@post('/presence'))"
-                      " : evt.key==='Escape' ? ($edit=false,@post('/presence')) : null")
+                 :data-on:keydown__stop
+                 (str "evt.key==='Enter' ? (evt.preventDefault(),$cell=$sel,@post('/cell'),$edit=false,@post('/presence'))"
+                      " : evt.key==='Escape' ? (evt.preventDefault(),$edit=false,@post('/presence')) : null")
                  :data-on:blur "$edit && ($cell=$sel,@post('/cell'),$edit=false,@post('/presence'))"
                  :style "display:none;"}]]]
       ;; custom scrollbars
@@ -445,6 +450,23 @@
              [:span {:style kbd} "#cell A1"] " and ranges with " [:span {:style kbd} "#cells A1:A3"] "."]
             [:p {:style p} "e.g. " [:span {:style kbd} "=(+ #cell A1 #cell B1)"] " · "
              [:span {:style kbd} "=(reduce + #cells A1:A3)"]]
+            [:p {:style p} "Built-in functions: math (" [:span {:style kbd} "sum"] ", "
+             [:span {:style kbd} "round"] ", " [:span {:style kbd} "sqrt"] "…), stats ("
+             [:span {:style kbd} "mean"] ", " [:span {:style kbd} "median"] ", "
+             [:span {:style kbd} "stdev"] "), text (" [:span {:style kbd} "upper"] ", "
+             [:span {:style kbd} "join"] ", " [:span {:style kbd} "split"] "…), date ("
+             [:span {:style kbd} "today"] ", " [:span {:style kbd} "year"] ", "
+             [:span {:style kbd} "days-between"] ")."]
+
+            [:div {:style h3} "Reusable functions (ƒ)"]
+            [:p {:style p} "The " [:span {:style kbd} "ƒ"] " button (top bar) opens this sheet's "
+             "definitions library: write your own functions/constants as separate entries and call "
+             "them from any cell. e.g. add "
+             [:span {:style kbd} "(defn margin [rev cost] (/ (- rev cost) rev))"] " then use "
+             [:span {:style kbd} "=(margin #cell A1 #cell B1)"] ". Each entry collapses to name "
+             "badges; Edit expands it and " [:span {:style kbd} "⤢"] " opens a big editor (also next "
+             "to the formula and style bars). While you edit one it's locked for other "
+             "collaborators; saving recompiles every cell."]
 
             [:div {:style h3} "Styling a cell"]
             [:p {:style p} "Use the third toolbar row: pick a property, type a value or an "
@@ -471,6 +493,51 @@
             [:div {:style h3} "Sharing"]
             [:p {:style p} "The link / lock button (top bar, owner only) shares the sheet by capability "
              "link or with specific people, at view or edit level."]]]))))
+
+(declare deflib-html bigedit-html)
+
+(def ^:private stdlib-reference
+  "Read-only reference of the built-in functions (always available, can't be
+   edited), grouped by category."
+  [["math"  "sum product abs ceil floor round sqrt pow exp ln log10 sign"]
+   ["stats" "mean avg median variance stdev"]
+   ["text"  "upper lower trim join split str-replace starts-with? ends-with? includes? blank?"]
+   ["date"  "today year month day days-between  (ISO yyyy-MM-dd strings)"]])
+
+(defn- defs-html
+  "The definitions LIBRARY modal, toggled by $defspanel. The editable library
+   (#deflib) is a server-rendered fragment of chunks — each edited and locked
+   independently for collaboration, all merged into the sheet's program. Below it
+   is the read-only built-in stdlib reference. Pure server HTML + Datastar."
+  [storage-id]
+  (let [p   "margin:.2rem 0;font:13px sans-serif;color:var(--fg);"
+        kbd "font:12px monospace;background:var(--panel);border:1px solid var(--grid);border-radius:3px;padding:0 4px;"]
+    (str (h/html
+          [:div {:id "defswrap" :data-show "$defspanel"
+                 :data-on:click "$defspanel=false"
+                 :style (str "position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.35);"
+                             "display:flex;align-items:flex-start;justify-content:center;padding:4vh 1rem;")}
+           [:div {:data-on:click "evt.stopPropagation()"
+                  :style (str "background:var(--bg);border:1px solid var(--line);border-radius:8px;"
+                              "box-shadow:0 8px 32px rgba(0,0,0,.25);max-width:44rem;width:100%;"
+                              "max-height:88vh;overflow:auto;padding:1.1rem 1.3rem;")}
+            [:div {:style "display:flex;align-items:center;margin-bottom:.3rem;"}
+             [:h2 {:style "margin:0;font:600 18px sans-serif;flex:1;"} "Definitions library"]
+             [:button {:class "btn" :data-on:click "$defspanel=false" :title "close"} "✕"]]
+            [:p {:style p} "Functions and constants reusable by every formula in this sheet, kept as "
+             "separate entries. Editing one locks it for other collaborators; they all merge (in order) "
+             "into the sheet's program. Same sandbox as formulas — pure, no host interop."]
+            [:p {:style p} "e.g. " [:span {:style kbd} "(defn margin [rev cost] (/ (- rev cost) rev))"]
+             " → in a cell " [:span {:style kbd} "=(margin #cell A1 #cell B1)"]]
+            ;; dynamic, per-session library fragment (pushed on changes)
+            [:div {:id "deflib"} (h/raw (deflib-html nil storage-id))]
+            ;; read-only built-ins
+            [:details {:style "margin-top:.9rem;"}
+             [:summary {:style "font:600 13px sans-serif;cursor:pointer;color:var(--muted);"}
+              "Built-in functions (read-only)"]
+             (for [[cat names] stdlib-reference]
+               [:p {:style (str p "margin-left:.4rem;")}
+                [:b cat] ": " [:span {:style kbd} names]])]]]))))
 
 (defn- sheet-picker
   "Dropdown for switching sheets, grouped into 'your sheets' (👤) and 'shared
@@ -519,9 +586,11 @@
                (str
                 ;; design tokens — centralize colors/geometry so a merge can't
                 ;; silently drift them and so inline styles can share them.
-                ":root{--bg:#fff;--panel:#f6f6f6;--line:#bbb;--grid:#ddd;"
-                "--fg:#222;--muted:#666;--accent:#4a90d9;--accent2:#7aa7f0;"
-                "--danger:#c0392b;--radius:4px;}"
+                ;; palette tuned to the SaltRim logo: blue grid/parens, lime
+                ;; slice, slate wordmark — softer neutrals than the old grey/blue.
+                ":root{--bg:#fefefe;--panel:#f4f6f8;--line:#c7ccd1;--grid:#e2e6ea;"
+                "--fg:#3a4149;--muted:#7a828b;--accent:#2f8fd8;--accent2:#9ec9ee;"
+                "--accent-bg:#eaf4fc;--lime:#7cc62e;--danger:#c0392b;--radius:4px;}"
                 ;; toolbar: two rows. row 1 = picker/new/share/identity,
                 ;; row 2 = cell-ref + formula bar. .tool/.btn unify the inputs
                 ;; and buttons that used to repeat the same inline style string.
@@ -531,6 +600,14 @@
                 ".tool.mono{font-family:monospace;}"
                 ".btn{font:12px sans-serif;padding:5px 8px;border:1px solid var(--line);"
                 "border-radius:var(--radius);background:var(--panel);cursor:pointer;}"
+                ".btn:hover{border-color:var(--accent);}"
+                ;; primary action button (Save / Apply) — the brand accent
+                ".btn.primary{background:var(--accent);color:#fff;border-color:var(--accent);}"
+                ".btn.primary:hover{filter:brightness(1.06);}"
+                ;; definition name badges (collapsed library cards)
+                ".badge{display:inline-block;font:600 11px/1.5 monospace;color:var(--accent);"
+                "background:var(--accent-bg);border:1px solid var(--accent2);"
+                "border-radius:10px;padding:0 .5rem;}"
                 ".spacer{flex:1;}"
                 ;; resize grips: a thin hit-zone on a header's trailing edge that
                 ;; /app.js drags. The #rzguide is the single moving guide line.
@@ -595,15 +672,24 @@
              :data-signals:styleprop "'bg'"
              :data-signals:stylesrc "''"
              :data-signals:rzcmd "''"
+             ;; definitions library (ƒ modal)
+             :data-signals:defspanel "false"
+             :data-signals:defid "''"
+             :data-signals:defsrc "''"
+             ;; shared big-editor modal (formula bar / style bar / definitions)
+             :data-signals:bigedit "false"
+             :data-signals:bigwhat "''"
+             :data-signals:big "''"
              :data-signals:help "false"
-             
-             :style "font-family:sans-serif;margin:0;padding:.6rem;"}
+             :style "font-family:sans-serif;margin:0;padding:.6rem;min-height:100vh;background:var(--bg);color:var(--fg);"}
       [:div {:id "toast" :data-show "$err != ''" :data-text "$err"
              :data-on:click "$err=''"
              :style (str "position:fixed;top:1rem;right:1rem;max-width:26rem;background:#c0392b;"
                          "color:#fff;padding:.6rem .9rem;border-radius:6px;font:13px sans-serif;"
                          "cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3);z-index:20;")}]
       (h/raw (help-html))
+      (h/raw (defs-html storage-id))
+      (h/raw (bigedit-html))
       ;; ── toolbar row 1: sheet management + sharing + identity ───────────
       [:div {:class "toolrow"}
        (sheet-picker uid storage-id sname)
@@ -614,6 +700,7 @@
        ;; sharing toggle / badge (patched back by POST /share)
        (h/raw (share-html uid storage-id link-token))
        [:span {:class "spacer"}]
+       [:button {:class "btn" :data-on:click "$defspanel=true" :title "sheet definitions (reusable functions)"} "ƒ"]
        [:button {:class "btn" :data-on:click "$help=true" :title "help / quick guide"} "?"]
        ;; who am I + sign out
        [:span {:style "font:12px sans-serif;color:var(--muted);white-space:nowrap;"}
@@ -634,7 +721,8 @@
                 :data-on:focus "$edit=true, @post('/presence')"
                 :data-on:keydown "evt.key==='Enter' && ($cell=$sel, @post('/cell'))"
                 :data-on:blur "$cell=$sel, @post('/cell'), $edit=false, @post('/presence')"
-                :style "flex:1;"}]]
+                :style "flex:1;"}]
+       [:button {:class "btn" :title "big editor" :data-on:click "$big=$v, $bigwhat='v', $bigedit=true"} "⤢"]]
       ;; ── toolbar row 3: style of the selected cell ──────────────────────
       ;; prop dropdown + a literal-or-=formula source, applied to $sel on Enter
       ;; (like the formula bar — no separate button). $val is the cell's own
@@ -650,7 +738,8 @@
        [:input {:id "stylesrcbox" :class "tool mono" :data-bind:stylesrc ""
                 :placeholder "color / mask / =formula (use $val) — Enter to apply"
                 :data-on:keydown "evt.key==='Enter' && ($cell=$sel, @post('/style'))"
-                :style "flex:1;"}]]
+                :style "flex:1;"}]
+       [:button {:class "btn" :title "big editor" :data-on:click "$big=$stylesrc, $bigwhat='style', $bigedit=true"} "⤢"]]
       ;; logical-scroll viewport (custom wheel + scrollbars in /app.js)
       (grid-layers sh {:r0 0 :c0 0})
 
@@ -797,7 +886,9 @@
 (defn- pretty-err [msg]
   (let [m (str msg)]
     (cond
-      (re-find #"cannot be cast" m)    "type error (number expected)"
+      (re-find #"cannot be cast.*?(Number|Long|Double|Integer|Ratio|BigDecimal|BigInt)" m)
+      "type error (number expected)"
+      (re-find #"cannot be cast" m)    "type error"
       (re-find #"Divide by zero" m)    "divide by zero"
       (re-find #"unknown cell" m)      "reference to empty cell"
       (re-find #"disallowed symbol" m) "not allowed in a formula"
@@ -931,6 +1022,147 @@
   (boolean (some (fn [[k s]]
                    (and (not= k sid) (= sheet-id (:sheet s)) (= (:editing s) cell)))
                  @sessions*)))
+
+;; --- definitions library (per-chunk, collaboratively locked) ------------
+
+(defn- def-editor-of
+  "The sid currently editing definition chunk `id` on `sheet-id`, or nil."
+  [sheet-id id]
+  (some (fn [[k s]] (when (and (= sheet-id (:sheet s)) (= (:editdef s) id)) k))
+        @sessions*))
+
+(defn- def-names
+  "The symbols a chunk declares — the names of every top-level (def…)/(defn…)
+   form — shown as badges on the collapsed card. Empty source -> [\"untitled\"]."
+  [src]
+  (let [ns (map second (re-seq #"\(def[a-z]*\s+([A-Za-z0-9*+!?<>=_.%/-]+)" (str src)))]
+    (if (seq ns) (vec ns) ["untitled"])))
+
+(defn- fmt-edited
+  "Epoch-ms -> \"yyyy-MM-dd HH:mm\" (local), or nil."
+  [ms]
+  (when ms
+    (.format (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm")
+             (java.time.LocalDateTime/ofInstant (java.time.Instant/ofEpochMilli (long ms))
+                                                (java.time.ZoneId/systemDefault)))))
+
+(defn- deflib-html
+  "Inner HTML of #deflib for session `sid`. An ACCORDION: each chunk shows
+   collapsed (tier 1) as its declared-name badges + last-edit time, with Edit /
+   delete. Edit (`/deflock`) expands it (tier 2) into a textarea bound to $defsrc
+   with Save / Cancel and a ⤢ that opens the shared big editor (tier 3). A chunk
+   held by another session shows a lock badge and stays collapsed. `sid` may be
+   nil (initial page render: all read-only, no own-edit)."
+  [sid sheet-id]
+  (let [sh     (:sh (@sheets* sheet-id))
+        chunks (when sh (sheet/defs sh))
+        card   "border:1px solid var(--grid);border-radius:6px;padding:.45rem .6rem;margin:.4rem 0;"
+        row    "display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;"
+        when-s "font:11px sans-serif;color:var(--muted);white-space:nowrap;"
+        ta     (str "width:100%;box-sizing:border-box;min-height:7rem;margin:.3rem 0;"
+                    "white-space:pre;font:13px/1.4 monospace;resize:vertical;")
+        badges (fn [src] (for [n (def-names src)] [:span {:class "badge"} n]))]
+    (str (h/html
+          [:div
+           (if (empty? chunks)
+             [:p {:style "font:13px sans-serif;color:var(--muted);margin:.3rem 0;"}
+              "No definitions yet — add one below."]
+             (for [{:keys [id src edited]} chunks
+                   :let [editor (def-editor-of sheet-id id)
+                         mine?  (and sid (= editor sid))]]
+               [:div {:style card}
+                (cond
+                  ;; tier 2/3 — this session is editing: textarea + ⤢ big editor
+                  mine?
+                  [:div
+                   [:div {:style row}
+                    (badges src) [:span {:style "flex:1;"}]
+                    [:span {:style "font:11px sans-serif;color:var(--accent);"} "editing"]
+                    [:button {:class "btn" :title "open the big editor"
+                              :data-on:click "$big=$defsrc, $bigwhat='def', $bigedit=true"} "⤢"]]
+                   [:textarea {:class "tool mono" :data-bind:defsrc "" :spellcheck "false"
+                               :placeholder "(defn double [x] (* 2 x))" :style ta}]
+                   [:div {:style "display:flex;gap:.4rem;"}
+                    [:button {:class "btn primary" :data-on:click "@post('/defsave')"} "Save"]
+                    [:button {:class "btn" :data-on:click "@post('/defunlock')"} "Cancel"]]]
+
+                  ;; locked by another collaborator: collapsed, no Edit
+                  editor
+                  [:div {:style row}
+                   (badges src) [:span {:style "flex:1;"}]
+                   [:span {:style when-s}
+                    (str "🔒 " (or (get-in @sessions* [editor :uname]) "someone") " editing")]]
+
+                  ;; tier 1 collapsed: name badges + last-edit time + Edit / delete
+                  :else
+                  [:div {:style row}
+                   (badges src) [:span {:style "flex:1;"}]
+                   (when-let [w (fmt-edited edited)] [:span {:style when-s} (str "edited " w)])
+                   [:button {:class "btn" :data-on:click (str "$defid='" id "', @post('/deflock')")} "Edit"]
+                   [:button {:class "btn" :data-on:click (str "$defid='" id "', @post('/defdel')")
+                             :title "delete this definition"} "🗑"]])]))
+           [:button {:class "btn" :data-on:click "@post('/defadd')" :style "margin-top:.3rem;"}
+            "+ Add definition"]]))))
+
+(defn- bigedit-html
+  "A large shared editor modal (#bigedit). Opened from the formula bar, the style
+   bar, or a definition card by setting $big (the text to edit), $bigwhat (which
+   target: 'v' | 'style' | 'def') and $bigedit=true. Apply writes $big back to the
+   target signal and posts to the matching endpoint — entirely declarative."
+  []
+  (let [ta (str "width:100%;box-sizing:border-box;min-height:52vh;"
+                "font:13px/1.5 monospace;white-space:pre;resize:vertical;"
+                "border:1px solid var(--line);border-radius:var(--radius);padding:.5rem .6rem;")]
+    (str (h/html
+          [:div {:id "bigeditwrap" :data-show "$bigedit" :data-on:click "$bigedit=false"
+                 :style (str "position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.35);"
+                             "display:flex;align-items:flex-start;justify-content:center;padding:4vh 1rem;")}
+           [:div {:data-on:click "evt.stopPropagation()"
+                  :style (str "background:var(--bg);border:1px solid var(--line);border-radius:8px;"
+                              "box-shadow:0 8px 32px rgba(0,0,0,.25);max-width:48rem;width:100%;padding:1rem 1.1rem;")}
+            [:div {:style "display:flex;align-items:center;margin-bottom:.4rem;"}
+             [:h2 {:style "margin:0;font:600 15px sans-serif;flex:1;"
+                   :data-text (str "$bigwhat==='v' ? 'Edit value / formula' : "
+                                   "($bigwhat==='style' ? 'Edit style source' : 'Edit definition')")}]
+             [:button {:class "btn" :data-on:click "$bigedit=false" :title "close"} "✕"]]
+            [:textarea {:id "bigbox" :class "mono" :data-bind:big "" :spellcheck "false" :style ta}]
+            [:div {:style "display:flex;gap:.4rem;margin-top:.5rem;justify-content:flex-end;"}
+             [:button {:class "btn" :data-on:click "$bigedit=false"} "Cancel"]
+             [:button {:class "btn primary"
+                       :data-on:click
+                       (str "($bigwhat==='v' ? ($v=$big, $cell=$sel, @post('/cell')) : "
+                            "$bigwhat==='style' ? ($stylesrc=$big, $cell=$sel, @post('/style')) : "
+                            "($defsrc=$big, @post('/defsave'))), $bigedit=false")} "Apply"]]]]))))
+
+(defn- push-deflib! [gen sid sheet-id]
+  (patch-inner! gen "#deflib" (deflib-html sid sheet-id)))
+
+(defn- broadcast-deflib!
+  "Re-render #deflib for every session on the sheet (each its own view, since
+   lock badges + the editable card are per session). Used when the library or a
+   lock changes, and on reap to release a departed editor's lock."
+  [sheet-id]
+  (doseq [[sid s] @sessions*]
+    (when (and (= sheet-id (:sheet s)) (:gen s))
+      (try (d*/lock-sse! (:gen s) (patch-inner! (:gen s) "#deflib" (deflib-html sid sheet-id)))
+           (when (:webkit? s) (webkit-flush! sid))
+           (catch Throwable _ (reap-session! sid))))))
+
+(defn- broadcast-deflib-except!
+  "Like broadcast-deflib! but skips `except-sid` (whose own #deflib the calling
+   handler already patched on its one-shot response)."
+  [except-sid sheet-id]
+  (doseq [[sid s] @sessions*]
+    (when (and (not= sid except-sid) (= sheet-id (:sheet s)) (:gen s))
+      (try (d*/lock-sse! (:gen s) (patch-inner! (:gen s) "#deflib" (deflib-html sid sheet-id)))
+           (when (:webkit? s) (webkit-flush! sid))
+           (catch Throwable _ (reap-session! sid))))))
+
+(defn- def-errs-msg [errors]
+  (if (seq errors)
+    (str "saved; cells still erroring: "
+         (str/join "; " (map (fn [[a m]] (str a ": " (pretty-err m))) errors)))
+    ""))
 
 (defn- deny
   "One-shot SSE that only raises the error toast (auth/access failures)."
@@ -1101,6 +1333,120 @@
               (catch Throwable e
                 (signals! gen {:err (pretty-err (.getMessage e))})))))))))
 
+;; The definitions library is edited per chunk with a collaborative lock: a
+;; session claims a chunk (/deflock), edits its own textarea, then /defsave or
+;; /defunlock. While held, the chunk is read-only for everyone else. /defadd
+;; creates a chunk and locks it; /defdel removes one. Every mutation recompiles
+;; the sheet (defs feed every formula) so we re-render the window for all and
+;; refresh #deflib for all.
+
+(defn- guard-rw
+  "Run f only with read-write access, else toast. f is a thunk."
+  [rec gen f]
+  (if (not= :read-write (:level rec))
+    (signals! gen {:err "read-only access — you can't edit definitions"})
+    (f)))
+
+(defn- handle-deflock
+  "Claim the edit lock on chunk $defid (if free), populate $defsrc with its
+   source, and show this session an editable card; others see it locked."
+  [req]
+  (with-access req
+    (fn [uid sheet-id rec {:keys [sid defid]} gen]
+      (ensure-session! sid sheet-id uid (:token rec))
+      (let [sh    (:sh rec)
+            chunk (first (filter #(= (:id %) defid) (sheet/defs sh)))]
+        (guard-rw rec gen
+          (fn []
+            (cond
+              (nil? chunk)                       (signals! gen {:err ""})
+              (def-editor-of sheet-id defid)     (signals! gen {:err "that definition is being edited by someone else"})
+              :else
+              (do (swap! sessions* assoc-in [sid :editdef] defid)
+                  (signals! gen {:defid defid :defsrc (:src chunk) :err ""})
+                  (push-deflib! gen sid sheet-id)
+                  (broadcast-deflib-except! sid sheet-id)))))))))
+
+(defn- handle-defunlock
+  "Release this session's edit lock without saving."
+  [req]
+  (with-access req
+    (fn [uid sheet-id rec {:keys [sid]} gen]
+      (ensure-session! sid sheet-id uid (:token rec))
+      (swap! sessions* assoc-in [sid :editdef] nil)
+      (signals! gen {:defid "" :defsrc ""})
+      (push-deflib! gen sid sheet-id)
+      (broadcast-deflib-except! sid sheet-id))))
+
+(defn- handle-defsave
+  "Save the held chunk's new source ($defsrc), release the lock, recompile. A
+   source that doesn't evaluate is rejected and the lock is KEPT so the user can
+   fix it (toast)."
+  [req]
+  (with-access req
+    (fn [uid sheet-id rec {:keys [sid defid defsrc]} gen]
+      (ensure-session! sid sheet-id uid (:token rec))
+      (let [sh (:sh rec)]
+        (guard-rw rec gen
+          (fn []
+            (if (not= sid (def-editor-of sheet-id defid))
+              (signals! gen {:err "you no longer hold this definition's lock"})
+              (locking edit-lock
+                (try
+                  (let [{:keys [errors]} (sheet/update-def! sh defid (str defsrc))]
+                    (swap! sessions* assoc-in [sid :editdef] nil)
+                    (save-rec! sheet-id)
+                    (signals! gen {:defid "" :defsrc "" :err (def-errs-msg errors)})
+                    (render-window! gen sid sheet-id sh (session-view sid))
+                    (broadcast-window! sid sheet-id sh)
+                    (push-deflib! gen sid sheet-id)
+                    (broadcast-deflib-except! sid sheet-id))
+                  (catch Throwable e
+                    (signals! gen {:err (str "definition error: " (pretty-err (.getMessage e)))})))))))))))
+
+(defn- handle-defadd
+  "Add a new (empty) chunk and immediately lock it for this session to edit."
+  [req]
+  (with-access req
+    (fn [uid sheet-id rec {:keys [sid]} gen]
+      (ensure-session! sid sheet-id uid (:token rec))
+      (let [sh (:sh rec)]
+        (guard-rw rec gen
+          (fn []
+            (locking edit-lock
+              (let [{:keys [id]} (sheet/add-def! sh "")]
+                (swap! sessions* assoc-in [sid :editdef] id)
+                (save-rec! sheet-id)
+                (signals! gen {:defid id :defsrc "" :err ""})
+                (push-deflib! gen sid sheet-id)
+                (broadcast-deflib-except! sid sheet-id)))))))))
+
+(defn- handle-defdel
+  "Delete chunk $defid (unless another session is editing it) and recompile."
+  [req]
+  (with-access req
+    (fn [uid sheet-id rec {:keys [sid defid]} gen]
+      (ensure-session! sid sheet-id uid (:token rec))
+      (let [sh     (:sh rec)
+            editor (def-editor-of sheet-id defid)]
+        (guard-rw rec gen
+          (fn []
+            (if (and editor (not= editor sid))
+              (signals! gen {:err "that definition is being edited by someone else"})
+              (locking edit-lock
+                (try
+                  (let [{:keys [errors]} (sheet/remove-def! sh defid)]
+                    (when (= defid (get-in @sessions* [sid :editdef]))
+                      (swap! sessions* assoc-in [sid :editdef] nil))
+                    (save-rec! sheet-id)
+                    (signals! gen {:defid "" :defsrc "" :err (def-errs-msg errors)})
+                    (render-window! gen sid sheet-id sh (session-view sid))
+                    (broadcast-window! sid sheet-id sh)
+                    (push-deflib! gen sid sheet-id)
+                    (broadcast-deflib-except! sid sheet-id))
+                  (catch Throwable e
+                    (signals! gen {:err (pretty-err (.getMessage e))})))))))))))
+
 (defn- body-json [req]
   (when-let [b (:body req)]
     (json/read-value (slurp b) json/keyword-keys-object-mapper)))
@@ -1154,6 +1500,8 @@
              ;; restore this session's own marker (reconnect) and show it the
              ;; cursors already present (and vice versa).
              (try (patch-inner! gen "#self" (self-html sid sheet-id)) (catch Throwable _))
+             ;; show this session the current definitions library + lock state
+             (try (push-deflib! gen sid sheet-id) (catch Throwable _))
              (broadcast-presence! sheet-id)))}))))))
 
 (defn- handle-session-end [req]
@@ -1294,30 +1642,35 @@
     set-cookie (assoc-in [:headers "Set-Cookie"] set-cookie)))
 
 (defn- login-page [err]
-  (let [field (str "font:13px sans-serif;padding:6px 8px;border:1px solid #bbb;"
+  (let [field (str "font:13px sans-serif;padding:6px 8px;border:1px solid #c7ccd1;"
                    "border-radius:4px;")]
     (str
      "<!doctype html>"
      (h/html
       [:html
-       [:head [:meta {:charset "utf-8"}] [:title "SaltRim — sign in"]]
-       [:body {:style "font-family:sans-serif;max-width:24rem;margin:14vh auto;"}
-        [:h1 {:style "font-weight:600;"} "SaltRim"]
-        [:p {:style "color:#666;"} "Sign in to open your sheets."]
+       [:head [:meta {:charset "utf-8"}] [:title "SaltRim — sign in"]
+        [:link {:rel "icon" :type "image/png" :href "/favicon.png"}]]
+       ;; explicit light bg so an OS dark theme can't black out the page; the
+       ;; centered column lives in an inner wrapper.
+       [:body {:style "font-family:sans-serif;margin:0;min-height:100vh;background:#fefefe;color:#3a4149;"}
+        [:div {:style "max-width:24rem;margin:0 auto;padding:14vh 1rem 0;"}
+        [:img {:src "/SaltRim.png" :alt "SaltRim"
+               :style "display:block;margin:0 auto .6rem;width:180px;height:auto;"}]
+        [:p {:style "color:#7a828b;text-align:center;margin-top:0;"} "Sign in to open your sheets."]
         (when err
           [:p {:style "color:#c0392b;font:13px sans-serif;"} (url-decode err)])
         [:div {:style "display:flex;flex-direction:column;gap:.6rem;"}
          (for [[k p] (auth/providers)]
            [:a {:href (str "/auth/" (name k))
                 :style (str field "text-align:center;text-decoration:none;"
-                            "background:#f6f6f6;color:#222;display:block;")}
+                            "background:#f4f6f8;color:#3a4149;display:block;")}
             (str "Continue with " (:label p))])
          (when (auth/dev-auth?)
            [:form {:method "get" :action "/auth/dev"
                    :style "display:flex;gap:.4rem;"}
             [:input {:name "name" :placeholder "your name (dev login)"
                      :autofocus true :style (str field "flex:1;")}]
-            [:button {:style field} "Sign in"]])]]]))))
+            [:button {:style field} "Sign in"]])]]]]))))
 
 (defn- denied-page [uid]
   (str
@@ -1407,6 +1760,12 @@
                             {:status 200 :headers {"Content-Type" "text/javascript"}
                              :body (slurp r)}
                             {:status 404 :body "no app.js"})
+    ;; brand wordmark (login page)
+    [:get "/SaltRim.png"] (if-let [r (io/resource "SaltRim.png")]
+                            {:status 200 :headers {"Content-Type" "image/png"
+                                                   "Cache-Control" "max-age=86400"}
+                             :body (io/input-stream r)}
+                            {:status 404 :body "no logo"})
     ;; both the explicit link (/favicon.png) and the browser's automatic
     ;; /favicon.ico request (covers pages without the <link>, e.g. login)
     ([:get "/favicon.png"] [:get "/favicon.ico"])
@@ -1434,6 +1793,11 @@
     [:post "/cell"]       (handle-cell req)
     [:post "/style"]      (handle-style req)
     [:post "/size"]       (handle-size req)
+    [:post "/deflock"]    (handle-deflock req)
+    [:post "/defunlock"]  (handle-defunlock req)
+    [:post "/defsave"]    (handle-defsave req)
+    [:post "/defadd"]     (handle-defadd req)
+    [:post "/defdel"]     (handle-defdel req)
     [:post "/view"]       (handle-view req)
     [:post "/presence"]   (handle-presence req)
     [:post "/share"]      (handle-share req)

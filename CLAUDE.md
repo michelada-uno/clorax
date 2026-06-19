@@ -125,6 +125,20 @@ attaches it to a GitHub Release. See SPEC.md "Build & release".
 Use the **Claude Preview** MCP tools (`preview_start` with `.claude/launch.json`,
 then `preview_eval`/`preview_screenshot`/`preview_console_logs`/`preview_network`).
 
+**ALWAYS shut down what you start.** A SaltRim server (preview `-M:web`, a dev
+nREPL, an uberjar) holds port 8080 **and file-locks the dev H2 db**
+(`data/saltrim-h2`), so a left-running JVM blocks the user's own runs and forces
+them to `lsof`/`kill` by hand. Before you finish a turn (and before starting a
+fresh server), stop every process you launched and free the ports — never leave
+one running "for convenience":
+
+```bash
+lsof -ti:8080 -ti:7888 | xargs kill -9 2>/dev/null   # free web + nREPL ports
+```
+
+Prefer `preview_stop` for a preview server; the command above is the catch-all.
+If you started a background `clojure`/`java`, kill it explicitly when done.
+
 Gotchas learned the hard way:
 - `preview_start` launches a **fresh JVM**. To pick up `web.clj` edits, restart
   the server. `app.js`/`datastar.js` are slurped per request, so a browser
@@ -141,7 +155,6 @@ Gotchas learned the hard way:
   suspecting the engine.
 - `GET /debug` returns session + loaded-sheet detail (dev only — gate before any
   real deploy).
-- Free the port between runs: `lsof -ti:8080 | xargs kill -9`.
 
 ## Spindel gotchas (the engine) — already solved, don't relearn
 
@@ -212,13 +225,20 @@ broad sharing is the link (the old `:everyone` flag auto-migrates to a link).
 **Cell presentation** (PR #14): reactive per-cell style (`$val`, separate style
 layer, 5 CSS props) + number-format masks (`fmt` ns, `:format` prop) +
 per-column/row sizing (sparse `:cols`/`:rows`, prefix-sum virtualizer, drag to
-resize); in-app help modal + README user guide. **Client = ClojureScript**: the
+resize); in-app help modal + README user guide. **Per-sheet namespace** (PR #24):
+each sheet has its own SCI context — a predefined stdlib (math/stats/text/date,
+bare, read-only) plus the user's own functions/constants kept as a **library of
+chunks** (the `ƒ` modal): each chunk `{:id :src}` edited independently with a
+**collaborative per-chunk lock** (session `:editdef`; `/deflock` `/defunlock`
+`/defsave` `/defadd` `/defdel`; #deflib pushed per session), all merged in order
+into the sheet program, persisted as `:defs` (vector) and recompiled live;
+`formula/compile` takes the sheet ctx. **Client = ClojureScript** (PR #25): the
 JS engine is ported to `app.cljs` (plain CLJS compiler, no node), the address +
 geometry code shared as `.cljc`, and the old hidden-trigger UI replaced by a
 Datastar-attribute + custom-event bridge.
 
-**What's next lives in `ROADMAP.md`** (single source). Headline track: formula
-engine → **SCI** (fixes `let`/locals, enables per-sheet namespaces + user fns),
-collapsible-toolbar UI rework, **JS → CLJS** (done), then multi-selection +
-cut/copy/paste. Cheap wins: dependency-graph view, cell assertions. Boss fight: git-like
-branching (forces cells → Datahike). See `TECHDEBT.md` for deferred items.
+**What's next lives in `ROADMAP.md`** (single source). SCI, per-sheet ns, and
+**JS → CLJS** are all DONE; next is the collapsible-toolbar UI rework, then
+multi-selection + cut/copy/paste. Cheap wins: dependency-graph view, cell
+assertions. Boss fight: git-like branching (forces cells → Datahike). See
+`TECHDEBT.md` for deferred items.
