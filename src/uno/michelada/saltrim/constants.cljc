@@ -9,11 +9,12 @@
 (def RH 26)             ; cell height px
 (def GUT 48)            ; row-header gutter px
 (def HDR 26)            ; col-header height px
-(def MAX-COLS 16384)    ; hard cap for clamping jumps
-;; ~600k keeps the spacer div under Firefox's ~17.9M px element limit
-;; (600000 * 26 = 15.6M px). See TECHDEBT.md — the giant-spacer scroll model
-;; is the real ceiling; want a logical scrollbar that needs no huge div.
-(def MAX-ROWS 600000)
+;; Logical grid caps. With the giant spacer gone (logical scrollbars need no huge
+;; DOM element) these are NO LONGER a DOM-element-size ceiling — they're just a
+;; sanity clamp on jumps/scroll, sized to a familiar spreadsheet's grid so
+;; column letters + row numbers stay bounded: 16384 cols = XFD, 1048576 rows.
+(def MAX-COLS 16384)
+(def MAX-ROWS 1048576)
 (def WIN-COLS 16)       ; window size (+overscan)
 (def WIN-ROWS 34)
 (def OVER 2)            ; overscan cells

@@ -225,7 +225,11 @@ broad sharing is the link (the old `:everyone` flag auto-migrates to a link).
 **Cell presentation** (PR #14): reactive per-cell style (`$val`, separate style
 layer, 5 CSS props) + number-format masks (`fmt` ns, `:format` prop) +
 per-column/row sizing (sparse `:cols`/`:rows`, prefix-sum virtualizer, drag to
-resize); in-app help modal + README user guide. **Per-sheet namespace** (PR #24):
+resize); in-app help modal + README user guide. **Per-sheet size defaults**:
+each sheet carries its own default column width / row height (`:dcw`/`:drh`,
+`CW`/`RH` initially), editable in an owner-only `⚙` properties modal (`/props`),
+flowed to the client on `#meta` as `data-dcw/drh`; resize drags **snap** to
+multiples of the default (hold `Alt` to disable). **Per-sheet namespace** (PR #24):
 each sheet has its own SCI context — a predefined stdlib (math/stats/text/date,
 bare, read-only) plus the user's own functions/constants kept as a **library of
 chunks** (the `ƒ` modal): each chunk `{:id :src}` edited independently with a

@@ -61,8 +61,8 @@
 ;; plus the (override-base) deltas of every sized index BEFORE it. The same
 ;; arithmetic runs in /app.js (from the maps in #meta) so client + server agree.
 
-(defn- col-w [sh ci] (or (sheet/col-width sh ci) CW))
-(defn- row-h [sh ri] (or (sheet/row-height sh ri) RH))
+(defn- col-w [sh ci] (or (sheet/col-width sh ci) (sheet/default-col-w sh)))
+(defn- row-h [sh ri] (or (sheet/row-height sh ri) (sheet/default-row-h sh)))
 
 (defn- axis-off
   "Absolute start px of `i` along an axis whose default size is `base` and whose
@@ -71,8 +71,8 @@
   (reduce-kv (fn [acc k v] (cond-> acc (< (long k) (long i)) (+ (- (long v) base))))
              (* (long i) base) om))
 
-(defn- axis-x [sh ci] (axis-off (sheet/col-widths sh) CW ci))
-(defn- axis-y [sh ri] (axis-off (sheet/row-heights sh) RH ri))
+(defn- axis-x [sh ci] (axis-off (sheet/col-widths sh) (sheet/default-col-w sh) ci))
+(defn- axis-y [sh ri] (axis-off (sheet/row-heights sh) (sheet/default-row-h sh) ri))
 
 ;; --- state --------------------------------------------------------------
 
@@ -284,16 +284,16 @@
   [sh a ci ri cbase rbase]
   (let [disp (display sh a)
         raw  (or (sheet/raw sh a) disp)
-        w    (sheet/col-width sh ci)
-        h    (sheet/row-height sh ri)
         srcs (sheet/style-srcs sh a)]      ; {prop raw} -> echoed into the style bar
+    ;; width/height always emitted (override OR the sheet default) so geometry is
+    ;; fully data-driven: a default-size change re-renders the window and applies
+    ;; live for everyone — no stale CSS, no reload.
     [:div {:id (cell-id a) :class "cell" :data-raw raw
            :data-sty (when (seq srcs) (json/write-value-as-string srcs))
-           :style (str (format "left:%dpx;top:%dpx"
+           :style (str (format "left:%dpx;top:%dpx;width:%dpx;height:%dpx"
                                (- (axis-x sh ci) (axis-x sh cbase))
-                               (- (axis-y sh ri) (axis-y sh rbase)))
-                       (when w (format ";width:%dpx" (dec w)))
-                       (when h (format ";height:%dpx" (dec h)))
+                               (- (axis-y sh ri) (axis-y sh rbase))
+                               (dec (col-w sh ci)) (dec (row-h sh ri)))
                        (cell-style-decls sh a))}
      disp]))
 
@@ -333,6 +333,8 @@
   (let [[tw th] (total-px sh r0 c0)
         [cb rb] (view-base {:r0 r0 :c0 c0})]
     (str (h/html [:div {:id "meta" :data-tw tw :data-th th :data-cb cb :data-rb rb
+                        ;; per-sheet default axis sizes (client geometry base)
+                        :data-dcw (sheet/default-col-w sh) :data-drh (sheet/default-row-h sh)
                         ;; sparse axis-size overrides so /app.js computes offsets
                         :data-colw (json/write-value-as-string (sheet/col-widths sh))
                         :data-rowh (json/write-value-as-string (sheet/row-heights sh))
@@ -484,7 +486,11 @@
 
             [:div {:style h3} "Column & row size"]
             [:p {:style p} "Drag the trailing edge of a column header (or the bottom edge of a row "
-             "number) to resize it. Sizes are saved with the sheet."]
+             "number) to resize it. Sizes are saved with the sheet. Dragging "
+             [:b "snaps"] " to multiples of the sheet default (1×, 2×, 3×…); hold "
+             [:span {:style kbd} "Alt"] " while dragging to size freely."]
+            [:p {:style p} "Owners can set the sheet-wide default column width / row height in "
+             [:span {:style kbd} "⚙"] " (Sheet properties, top bar)."]
 
             [:div {:style h3} "Navigation"]
             [:p {:style p} "Click to select · double-click or " [:span {:style kbd} "Enter"]
@@ -539,6 +545,40 @@
                [:p {:style (str p "margin-left:.4rem;")}
                 [:b cat] ": " [:span {:style kbd} names]])]]]))))
 
+(defn- props-html
+  "Owner-only Sheet properties modal, toggled by $propspanel. Today: the sheet's
+   DEFAULT column width / row height (px) — the size of any unsized column/row.
+   Built as a labelled grid so more sheet-wide settings slot in as new rows.
+   $pcw/$prh are server-seeded with the current values; Apply posts /props."
+  []
+  (let [p     "margin:.2rem 0 .7rem;font:13px sans-serif;color:var(--muted);"
+        lbl   "font:13px sans-serif;color:var(--fg);align-self:center;"
+        num   "font:13px monospace;padding:5px 6px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);width:6rem;"]
+    (str (h/html
+          [:div {:id "propswrap" :data-show "$propspanel"
+                 :data-on:click "$propspanel=false"
+                 :style (str "position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.35);"
+                             "display:flex;align-items:flex-start;justify-content:center;padding:4vh 1rem;")}
+           [:div {:data-on:click "evt.stopPropagation()"
+                  :style (str "background:var(--bg);border:1px solid var(--line);border-radius:8px;"
+                              "box-shadow:0 8px 32px rgba(0,0,0,.25);max-width:30rem;width:100%;"
+                              "max-height:88vh;overflow:auto;padding:1.1rem 1.3rem;")}
+            [:div {:style "display:flex;align-items:center;margin-bottom:.3rem;"}
+             [:h2 {:style "margin:0;font:600 18px sans-serif;flex:1;"} "Sheet properties"]
+             [:button {:class "btn" :data-on:click "$propspanel=false" :title "close"} "✕"]]
+            [:p {:style p} "Sheet-wide defaults. Individual columns/rows you've dragged keep their own size."]
+            [:div {:style "display:grid;grid-template-columns:auto 1fr;gap:.55rem .8rem;align-items:center;"}
+             [:label {:style lbl :for "pcw"} "Default column width"]
+             [:input {:id "pcw" :type "number" :min "24" :max "2000" :step "1"
+                      :data-bind:pcw "" :style num
+                      :data-on:keydown "evt.key==='Enter' && @post('/props')"}]
+             [:label {:style lbl :for "prh"} "Default row height"]
+             [:input {:id "prh" :type "number" :min "16" :max "1000" :step "1"
+                      :data-bind:prh "" :style num
+                      :data-on:keydown "evt.key==='Enter' && @post('/props')"}]]
+            [:div {:style "margin-top:1rem;text-align:right;"}
+             [:button {:class "btn primary" :data-on:click "@post('/props'), $propspanel=false"} "Apply"]]]]))))
+
 (defn- sheet-picker
   "Dropdown for switching sheets, grouped into 'your sheets' (👤) and 'shared
    with you' (✎ edit / 👁 view). Selecting one navigates to it. A foreign sheet
@@ -569,7 +609,8 @@
 (defn- page [sh storage-id sname uid link-token]
   ;; one session id seeds BOTH $sid (sent on /stream, registers the session) and
   ;; #ctl's data-sid (read by the unload beacon) — they must be the same value.
-  (let [sid (str (random-uuid))]
+  (let [sid    (str (random-uuid))
+        owner? (= uid (first (store/split-id storage-id)))]
    (str
     "<!doctype html>"
    (h/html
@@ -617,14 +658,18 @@
                 "cursor:row-resize;z-index:5;}"
                 "#rzguide{position:absolute;display:none;background:var(--accent);"
                 "z-index:7;pointer-events:none;}"
-                (format (str ".cell{position:absolute;width:%dpx;height:%dpx;"
-                             "box-sizing:border-box;border:1px solid var(--grid);"
-                             "padding:2px 4px;font:13px monospace;overflow:hidden;"
-                             "white-space:nowrap;background:var(--bg);}"
-                             "#editor{position:absolute;width:%dpx;height:%dpx;"
-                             "box-sizing:border-box;border:1px solid var(--accent);"
-                             "padding:2px 4px;font:13px monospace;outline:none;z-index:6;}")
-                        (- CW 1) (- RH 1) (- CW 1) (- RH 1))
+                ;; default cell/editor box = this SHEET's default axis sizes (a
+                ;; sized column/row overrides inline per cell). Server-rendered so
+                ;; changing the sheet default reflows the grid on reload.
+                (let [dw (dec (sheet/default-col-w sh)) dh (dec (sheet/default-row-h sh))]
+                  (format (str ".cell{position:absolute;width:%dpx;height:%dpx;"
+                               "box-sizing:border-box;border:1px solid var(--grid);"
+                               "padding:2px 4px;font:13px monospace;overflow:hidden;"
+                               "white-space:nowrap;background:var(--bg);}"
+                               "#editor{position:absolute;width:%dpx;height:%dpx;"
+                               "box-sizing:border-box;border:1px solid var(--accent);"
+                               "padding:2px 4px;font:13px monospace;outline:none;z-index:6;}")
+                          dw dh dw dh))
                 ;; selection / editing OVERLAY (#self), server-rendered. Literal %
                 ;; in the gradients -> kept OUT of the format call above.
                 ;; calm "you are here" selection box:
@@ -681,6 +726,10 @@
              :data-signals:bigwhat "''"
              :data-signals:big "''"
              :data-signals:help "false"
+             ;; sheet properties (⚙ modal, owner-only) — seeded with current defaults
+             :data-signals:propspanel "false"
+             :data-signals:pcw (str (sheet/default-col-w sh))
+             :data-signals:prh (str (sheet/default-row-h sh))
              :style "font-family:sans-serif;margin:0;padding:.6rem;min-height:100vh;background:var(--bg);color:var(--fg);"}
       [:div {:id "toast" :data-show "$err != ''" :data-text "$err"
              :data-on:click "$err=''"
@@ -690,6 +739,7 @@
       (h/raw (help-html))
       (h/raw (defs-html storage-id))
       (h/raw (bigedit-html))
+      (when owner? (h/raw (props-html)))
       ;; ── toolbar row 1: sheet management + sharing + identity ───────────
       [:div {:class "toolrow"}
        (sheet-picker uid storage-id sname)
@@ -701,6 +751,8 @@
        (h/raw (share-html uid storage-id link-token))
        [:span {:class "spacer"}]
        [:button {:class "btn" :data-on:click "$defspanel=true" :title "sheet definitions (reusable functions)"} "ƒ"]
+       (when owner?
+         [:button {:class "btn" :data-on:click "$propspanel=true" :title "sheet properties"} "⚙"])
        [:button {:class "btn" :data-on:click "$help=true" :title "help / quick guide"} "?"]
        ;; who am I + sign out
        [:span {:style "font:12px sans-serif;color:var(--muted);white-space:nowrap;"}
@@ -1333,6 +1385,30 @@
               (catch Throwable e
                 (signals! gen {:err (pretty-err (.getMessage e))})))))))))
 
+(defn- handle-props
+  "Owner-only sheet properties: set the default column width / row height from
+   $pcw/$prh. Every position + the default cell box change, so re-render the
+   whole window for the owner and broadcast it to collaborators. Reseed $pcw/$prh
+   with the stored (clamped) values."
+  [req]
+  (with-owner req
+    (fn [uid sheet-id rec {:keys [sid pcw prh]} gen]
+      (ensure-session! sid sheet-id uid (:token rec))
+      (let [sh (:sh rec)
+            w  (parse-long (str pcw))
+            h  (parse-long (str prh))]
+        (locking edit-lock
+          (try
+            (when (and w (pos? w)) (sheet/set-default-col-w! sh w))
+            (when (and h (pos? h)) (sheet/set-default-row-h! sh h))
+            (save-rec! sheet-id)
+            (signals! gen {:pcw (str (sheet/default-col-w sh))
+                           :prh (str (sheet/default-row-h sh)) :err ""})
+            (render-window! gen sid sheet-id sh (session-view sid))
+            (broadcast-window! sid sheet-id sh)
+            (catch Throwable e
+              (signals! gen {:err (pretty-err (.getMessage e))}))))))))
+
 ;; The definitions library is edited per chunk with a collaborative lock: a
 ;; session claims a chunk (/deflock), edits its own textarea, then /defsave or
 ;; /defunlock. While held, the chunk is read-only for everyone else. /defadd
@@ -1793,6 +1869,7 @@
     [:post "/cell"]       (handle-cell req)
     [:post "/style"]      (handle-style req)
     [:post "/size"]       (handle-size req)
+    [:post "/props"]      (handle-props req)
     [:post "/deflock"]    (handle-deflock req)
     [:post "/defunlock"]  (handle-defunlock req)
     [:post "/defsave"]    (handle-defsave req)

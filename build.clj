@@ -16,7 +16,7 @@
   ;; CI sets VERSION from the pushed tag (vX.Y.Z -> X.Y.Z); locally we derive a
   ;; dev version from the commit count so jar names are still unique.
   (or (System/getenv "VERSION")
-      (format "0.1.%s-dev" (b/git-count-revs nil))))
+      (format "0.2.%s-dev" (b/git-count-revs nil))))
 
 (defn- ctx [opts]
   (let [v (or (:version opts) (version))]
