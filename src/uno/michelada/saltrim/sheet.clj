@@ -10,6 +10,7 @@
    Formula cell  = Spin compiled from an `=`-expression; refs other cells via
                    `await`, so formula->formula works."
   (:require [clojure.string :as str]
+            [uno.michelada.saltrim.constants :as c]
             [uno.michelada.saltrim.formula :as formula]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -22,14 +23,16 @@
         vals     (atom {})
         meta     (atom {})
         styles   (atom {})
-        cols     (atom {})        ; ci -> width-px  (sparse; default elsewhere)
-        rows     (atom {})        ; ri -> height-px (sparse)
+        cols     (atom {})        ; ci -> width-px  (sparse; falls back to @dcw)
+        rows     (atom {})        ; ri -> height-px (sparse; falls back to @drh)
+        dcw      (atom c/CW)      ; this sheet's DEFAULT column width  (px)
+        drh      (atom c/RH)      ; this sheet's DEFAULT row height     (px)
         sci      (atom (formula/new-ctx nil))  ; per-sheet SCI ctx: stdlib + user defs
         defs     (atom [])        ; library: ordered vector of chunks {:id :src} (persisted)
         rt       (ctx/create-execution-context
                   {:metadata {:registry registry :vals vals}})]
     {:rt rt :registry registry :vals vals :meta meta :styles styles
-     :cols cols :rows rows :sci sci :defs defs}))
+     :cols cols :rows rows :dcw dcw :drh drh :sci sci :defs defs}))
 
 (defn- classify [raw]
   (let [t (some-> raw str/trim)]
@@ -256,6 +259,16 @@
 (defn row-height [{:keys [rows]} ri] (get @rows (long ri)))
 (defn col-widths  [{:keys [cols]}] @cols)
 (defn row-heights [{:keys [rows]}] @rows)
+
+;; Per-sheet DEFAULT axis sizes: the size of any column/row WITHOUT a sparse
+;; override. Editable in the sheet's properties (so a sheet can be globally
+;; denser/wider) and persisted; the global constants/CW/RH are just the initial
+;; default. The client reads these from #meta so its geometry math agrees.
+(defn default-col-w [{:keys [dcw]}] @dcw)
+(defn default-row-h [{:keys [drh]}] @drh)
+
+(defn set-default-col-w! [{:keys [dcw]} w] (when-let [w (pos-int w)] (reset! dcw (long w))))
+(defn set-default-row-h! [{:keys [drh]} h] (when-let [h (pos-int h)] (reset! drh (long h))))
 
 (defn load-sizing!
   "Replace the axis-size maps from a stored document (keys may arrive as ints)."

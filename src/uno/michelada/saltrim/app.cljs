@@ -44,13 +44,16 @@
 
 (defn- mta
   "The rendered window's live geometry from #meta: totals (tw/th), base index
-   (cb/rb) and the sparse per-index size overrides (colw/rowh JS objects)."
+   (cb/rb), the per-sheet DEFAULT axis sizes (dcw/drh — the size of any unsized
+   column/row) and the sparse per-index size overrides (colw/rowh JS objects)."
   []
   (let [m ($ "meta")]
     {:tw   (js/Number (or (dset m "tw") 1))
      :th   (js/Number (or (dset m "th") 1))
      :cb   (js/Number (or (dset m "cb") 0))
      :rb   (js/Number (or (dset m "rb") 0))
+     :dcw  (js/Number (or (dset m "dcw") CW))
+     :drh  (js/Number (or (dset m "drh") RH))
      :colw (pj (dset m "colw"))
      :rowh (pj (dset m "rowh"))}))
 
@@ -100,8 +103,8 @@
 
 (defn- render! []
   (let [m  (mta)
-        tx (- (axis-pos (:cb m) CW (:colw m)) @SX)
-        ty (- (axis-pos (:rb m) RH (:rowh m)) @SY)]
+        tx (- (axis-pos (:cb m) (:dcw m) (:colw m)) @SX)
+        ty (- (axis-pos (:rb m) (:drh m) (:rowh m)) @SY)]
     ;; selection/editor/peer overlays + the cell layer all share the transform
     (doseq [id ["cells" "self" "peers" "editlayer"]] (set-transform! id tx ty))
     (set-transform! "colstrip" tx 0)
@@ -119,8 +122,8 @@
    window (sr-view -> @post '/view'). `force?` posts even if unchanged (jump)."
   [force?]
   (let [m  (mta)
-        c0 (pixel->index @SX CW (:colw m))
-        r0 (pixel->index @SY RH (:rowh m))]
+        c0 (pixel->index @SX (:dcw m) (:colw m))
+        r0 (pixel->index @SY (:drh m) (:rowh m))]
     (when (or force? (not= c0 @last-c0) (not= r0 @last-r0))
       (reset! last-c0 c0)
       (reset! last-r0 r0)
@@ -174,8 +177,8 @@
 (defn- ensure-visible! [a]
   (when-let [p (addr/parse a)]
     (let [m  (mta) vs (view-size)
-          x  (axis-pos (:ci p) CW (:colw m)) y (axis-pos (:ri p) RH (:rowh m))
-          w  (axis-size (:ci p) CW (:colw m)) h (axis-size (:ri p) RH (:rowh m))]
+          x  (axis-pos (:ci p) (:dcw m) (:colw m)) y (axis-pos (:ri p) (:drh m) (:rowh m))
+          w  (axis-size (:ci p) (:dcw m) (:colw m)) h (axis-size (:ri p) (:drh m) (:rowh m))]
       (cond (< x @SX)                   (reset! SX x)
             (< (+ @SX (:w vs)) (+ x w)) (reset! SX (- (+ x w) (:w vs))))
       (cond (< y @SY)                   (reset! SY y)
@@ -186,8 +189,9 @@
 
 (defn- jump! [a]
   (when-let [p (addr/parse a)]
-    (reset! SX (axis-pos (:ci p) CW (:colw (mta))))   ; park at top-left; /view extends totals
-    (reset! SY (axis-pos (:ri p) RH (:rowh (mta))))
+    (let [m (mta)]
+      (reset! SX (axis-pos (:ci p) (:dcw m) (:colw m)))   ; park at top-left; /view extends totals
+      (reset! SY (axis-pos (:ri p) (:drh m) (:rowh m))))
     (select! (addr/make (:ci p) (:ri p)))
     (render!) (request-view! true)))
 
@@ -202,10 +206,10 @@
     (let [a  (addr/make (:ci p) (:ri p))
           m  (mta) ed ($ "editor")]
       (ensure-visible! a)
-      (set! (.. ed -style -left)   (str (- (axis-pos (:ci p) CW (:colw m)) (axis-pos (:cb m) CW (:colw m))) "px"))
-      (set! (.. ed -style -top)    (str (- (axis-pos (:ri p) RH (:rowh m)) (axis-pos (:rb m) RH (:rowh m))) "px"))
-      (set! (.. ed -style -width)  (str (- (axis-size (:ci p) CW (:colw m)) 1) "px"))
-      (set! (.. ed -style -height) (str (- (axis-size (:ri p) RH (:rowh m)) 1) "px"))
+      (set! (.. ed -style -left)   (str (- (axis-pos (:ci p) (:dcw m) (:colw m)) (axis-pos (:cb m) (:dcw m) (:colw m))) "px"))
+      (set! (.. ed -style -top)    (str (- (axis-pos (:ri p) (:drh m) (:rowh m)) (axis-pos (:rb m) (:drh m) (:rowh m))) "px"))
+      (set! (.. ed -style -width)  (str (- (axis-size (:ci p) (:dcw m) (:colw m)) 1) "px"))
+      (set! (.. ed -style -height) (str (- (axis-size (:ri p) (:drh m) (:rowh m)) 1) "px"))
       (emit! "sr-edit" #js {:addr a})        ; sets $sel,$v,$edit=true,@post('/presence')
       ;; defer focus until Datastar has flipped $edit (data-show) + filled $v
       (js/setTimeout (fn [] (.focus ed) (.select ed)) 0))))
@@ -243,6 +247,18 @@
 ;; command (sr-size -> @post '/size'). The server stores px + re-renders.
 
 (def ^:private MINSZ 24)
+(def ^:private SNAP 10)   ; px: how close to a default-multiple before it sticks
+
+(defn- snap-size
+  "Sticky resize: snap `raw` px to the nearest POSITIVE multiple of `base` (the
+   sheet's default size) when within SNAP px — so a column settles on default,
+   2×default, 3×default… instead of a near-but-off value. Hold Alt while dragging
+   (alt? = true) to size freely with no snapping."
+  [raw base alt?]
+  (if alt?
+    raw
+    (let [n (js/Math.round (/ raw base)) target (* n base)]
+      (if (and (pos? n) (<= (js/Math.abs (- raw target)) SNAP)) target raw))))
 
 (defn- init-resize! []
   (let [vp ($ "viewport")]
@@ -262,7 +278,7 @@
            (let [m (mta) guide ($ "rzguide") rect (.getBoundingClientRect vp)
                  axis  (if col? "col" "row")
                  idx   (js/Number (dset t (if col? "ci" "ri")))
-                 base  (if col? CW RH)
+                 base  (if col? (:dcw m) (:drh m))
                  ov    (if col? (:colw m) (:rowh m))
                  start (if col? (.-clientX e) (.-clientY e))
                  start-sz (axis-size idx base ov)
@@ -273,9 +289,12 @@
                                  (str "display:block;top:0;height:100%;width:2px;left:" (- client (.-left rect)) "px")
                                  (str "display:block;left:0;width:100%;height:2px;top:" (- client (.-top rect)) "px"))))
                  mm    (fn mm [e2]
-                         (let [cur (if col? (.-clientX e2) (.-clientY e2))]
-                           (reset! sz (js/Math.max MINSZ (js/Math.round (+ start-sz (- cur start)))))
-                           (place cur)))
+                         (let [cur (if col? (.-clientX e2) (.-clientY e2))
+                               raw (js/Math.max MINSZ (js/Math.round (+ start-sz (- cur start))))
+                               s   (snap-size raw base (.-altKey e2))]
+                           (reset! sz s)
+                           ;; guide tracks the (snapped) edge so the stick is visible
+                           (place (+ start (- s start-sz)))))
                  mu    (atom nil)]
              (place start)
              (reset! mu (fn []

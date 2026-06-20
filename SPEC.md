@@ -190,12 +190,23 @@ that the client `translate`s.
 
 - Cells/headers are positioned **window-relative** to the rendered base
   `(cb,rb)` = `max(0, c0-OVER)`.
-- `#meta` (hidden) carries totals `tw/th` (logical px, for scrollbar sizing) and
-  the base `cb/rb`. It is patched **together with `#cells`** so the client's
-  transform always matches the displayed content (no jump mid-fetch).
-- Geometry constants: `CW=112 RH=26 GUT=48 HDR=26 OVER=2 WIN-COLS=16 WIN-ROWS=34
-  BAR=12`. `MAX-COLS=16384 MAX-ROWS=600000` (coordinate clamp). Empty cells cost
-  nothing (absent from registry → no spin).
+- `#meta` (hidden) carries totals `tw/th` (logical px, for scrollbar sizing), the
+  base `cb/rb`, the **per-sheet default axis sizes `dcw/drh`**, and the sparse
+  per-index size overrides `colw/rowh`. It is patched **together with `#cells`**
+  so the client's transform always matches the displayed content (no jump
+  mid-fetch). The client's geometry math (`axis-pos`/`axis-size`/`pixel->index`)
+  reads `dcw/drh` from `#meta`, so client + server agree on a sheet's sizes.
+- Geometry constants (the *initial* defaults; a sheet can override `CW/RH`):
+  `CW=112 RH=26 GUT=48 HDR=26 OVER=2 WIN-COLS=16 WIN-ROWS=34 BAR=12`.
+  `MAX-COLS=16384 MAX-ROWS=1048576` — a pure coordinate clamp now (no giant
+  spacer → no DOM ceiling), sized to a familiar grid (XFD cols / 1,048,576 rows).
+  Empty cells cost nothing (absent from registry → no spin).
+- **Per-sheet sizing**: each axis defaults to `dcw`/`drh` (a sheet property,
+  `CW`/`RH` initially, editable in the owner-only `⚙` properties modal → `/props`)
+  with sparse per-column/row px overrides (`sheet :cols/:rows`, drag a header edge
+  → `/size`). Resize drags **snap** to integer multiples of the default (hold
+  `Alt` to disable). Defaults + overrides persist with the sheet (`:dcw/:drh`,
+  `:cols/:rows`).
 - Per-cell HTML is a tiny **display `<div>`** (not an input): `.cell` class,
   `left/top`, `data-raw` (source for the editor), text = value. No ~500 live
   inputs. Selection/edit are delegated on `#viewport`.

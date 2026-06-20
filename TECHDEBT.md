@@ -10,6 +10,11 @@ positioned window-relative; the window base (cb/rb) ships in #meta alongside
 #cells so the transform always matches the displayed content (no jump while a
 fetch is in flight). Row cap and scrollbar-precision issues are gone.
 
+With the giant spacer gone, `MAX-COLS`/`MAX-ROWS` are no longer a DOM-element
+ceiling — they're a pure coordinate clamp, sized to a familiar grid
+(`16384` cols = XFD, `1048576` rows). The "600000 to stay under Firefox's
+element limit" rationale below is historical.
+
 Follow-ups: keyboard nav DONE (arrows/Tab/Enter move selection, Enter/dblclick
 edit — see web layer); PgUp/PgDn/Home/End not yet wired; WIN-COLS/ROWS are fixed
 (generous) rather than computed from viewport size; momentum/trackpad feel is

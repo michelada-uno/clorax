@@ -1,6 +1,8 @@
 (ns uno.michelada.saltrim.store-test
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.java.io :as io]
+            [clojure.string :as str]
+            [uno.michelada.saltrim.constants :as c]
             [uno.michelada.saltrim.sheet :as sheet]
             [uno.michelada.saltrim.store :as store]))
 
@@ -62,6 +64,29 @@
         (is (every? :id (sheet/defs s2)) "chunk ids preserved")
         (is (= 142 (sheet/value s2 "A2")) "cell using the user fn + const recomputed")))
     (finally (io/delete-file (io/file "data" (str defs-id ".edn")) true))))
+
+(def ^:private dflt-id "test_defaults_roundtrip")
+
+(deftest default-sizes-roundtrip
+  (io/delete-file (io/file "data" (str dflt-id ".edn")) true)
+  (try
+    (testing "non-default axis sizes persist and reload"
+      (let [s (sheet/create-sheet)]
+        (sheet/set-default-col-w! s 60)
+        (sheet/set-default-row-h! s 18)
+        (store/save! dflt-id s)
+        (let [s2 (store/load-sheet dflt-id)]
+          (is (= 60 (sheet/default-col-w s2)))
+          (is (= 18 (sheet/default-row-h s2))))))
+    (testing "a sheet left at the built-in default omits the keys but still loads"
+      (let [s (sheet/create-sheet)]
+        (store/save! dflt-id s)
+        (is (not (str/includes? (slurp (io/file "data" (str dflt-id ".edn"))) ":dcw"))
+            "default size not written when unchanged")
+        (let [s2 (store/load-sheet dflt-id)]
+          (is (= c/CW (sheet/default-col-w s2)))
+          (is (= c/RH (sheet/default-row-h s2))))))
+    (finally (io/delete-file (io/file "data" (str dflt-id ".edn")) true))))
 
 (deftest names-and-storage-ids
   (testing "sheet names exclude underscores (owner__name separator)"

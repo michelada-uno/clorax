@@ -12,6 +12,7 @@
   (:require [clojure.java.io :as io]
             [clojure.edn :as edn]
             [clojure.string :as str]
+            [uno.michelada.saltrim.constants :as c]
             [uno.michelada.saltrim.sheet :as sheet]
             [uno.michelada.saltrim.util :as util]))
 
@@ -58,12 +59,17 @@
    (let [f    (file id)
          cw   (sheet/col-widths sheet)
          rh   (sheet/row-heights sheet)
+         dcw  (sheet/default-col-w sheet)
+         drh  (sheet/default-row-h sheet)
          dfs  (sheet/defs sheet)]
      (io/make-parents f)
      (spit f (pr-str (cond-> {:fmt fmt :owner owner :public (boolean public)
                               :cells (sheet/document sheet)}
                        (seq cw) (assoc :cols cw)
                        (seq rh) (assoc :rows rh)
+                       ;; default axis sizes — only when changed from the built-in
+                       (not= dcw c/CW) (assoc :dcw dcw)
+                       (not= drh c/RH) (assoc :drh drh)
                        (seq dfs) (assoc :defs dfs)))))
    id))
 
@@ -73,13 +79,15 @@
    fmt 1 files have no envelope -> owner nil, public true (legacy)."
   [id]
   (when (exists? id)
-    (let [{:keys [fmt cells owner public cols rows defs]} (edn/read-string (slurp (file id)))
+    (let [{:keys [fmt cells owner public cols rows dcw drh defs]} (edn/read-string (slurp (file id)))
           s (sheet/create-sheet)]
       ;; apply the definitions library FIRST so cell formulas compile against it
       ;; (accepts the chunk vector, or a legacy single-string :defs)
       (when (seq defs) (sheet/set-defs! s defs))
       (sheet/load-document! s cells)
       (sheet/load-sizing! s (or cols {}) (or rows {}))
+      (when dcw (sheet/set-default-col-w! s dcw))
+      (when drh (sheet/set-default-row-h! s drh))
       (sheet/settle! s)
       {:sh s
        :owner owner

@@ -1,6 +1,7 @@
 (ns uno.michelada.saltrim.engine-test
   "Engine behavior, no UI. Values, chains, ranges, errors, structural rebuild."
   (:require [clojure.test :refer [deftest testing is]]
+            [uno.michelada.saltrim.constants :as c]
             [uno.michelada.saltrim.sheet :as sh]))
 
 (defn- mk [] (sh/create-sheet))
@@ -118,7 +119,17 @@
       (let [s2 (mk)]
         (sh/load-sizing! s2 (sh/col-widths s) (sh/row-heights s))
         (is (= 150 (sh/col-width s2 1)))
-        (is (= 30 (sh/row-height s2 3)))))))
+        (is (= 30 (sh/row-height s2 3))))))
+  (testing "per-sheet default axis sizes"
+    (let [s (mk)]
+      (is (= c/CW (sh/default-col-w s)) "starts at the built-in default")
+      (is (= c/RH (sh/default-row-h s)))
+      (sh/set-default-col-w! s 60)
+      (sh/set-default-row-h! s 20)
+      (is (= 60 (sh/default-col-w s)))
+      (is (= 20 (sh/default-row-h s)))
+      (sh/set-default-col-w! s 0)
+      (is (= 60 (sh/default-col-w s)) "non-positive is ignored (keeps last good)"))))
 
 (deftest cell-style
   (testing "literal style prop"

@@ -114,7 +114,11 @@ literal text.
 
 Drag the trailing edge of a **column header**, or the bottom edge of a **row
 number**, to resize it. Sizes are saved with the sheet. Drag back to (or past)
-the minimum to reset toward the default.
+the minimum to reset toward the default. Dragging **snaps** to multiples of the
+sheet default (1×, 2×, 3×…) — hold **Alt** to size freely.
+
+If you own the sheet, the **⚙ Sheet properties** panel (top bar) sets the
+sheet-wide default column width and row height.
 
 ### Navigation
 
