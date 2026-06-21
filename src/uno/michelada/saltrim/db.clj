@@ -486,9 +486,14 @@
                                 chg)]))
      chg)))
 
+(defn sheet-registered?
+  "True if a :sheet entity exists for `sheet-id` (it has been created)."
+  [sheet-id]
+  (boolean (d/q '[:find ?e . :in $ ?id :where [?e :sheet/id ?id]] @conn sheet-id)))
+
 (defn sheet-has-content?
-  "True if (sheet-id, branch) has any cell or branch entity — used by migration
-   to skip already-imported sheets (idempotent hard cutover)."
+  "True if (sheet-id, branch) has any cell or branch entity — i.e. something was
+   saved. (load-record returns nil otherwise so the caller makes a fresh sheet.)"
   ([sheet-id] (sheet-has-content? sheet-id MAIN))
   ([sheet-id branch]
    (boolean (or (d/q '[:find ?b . :in $ ?k :where [?b :branch/key ?k]] @conn (br-key sheet-id branch))
