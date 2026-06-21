@@ -245,10 +245,22 @@
   (render-sel!))
 
 (defn- sel-single! [c r] (sel-set! [{:a [c r] :f [c r]}]))
-(defn- sel-add!    [c r] (sel-set! (conj (:ranges @SEL) {:a [c r] :f [c r]})))
 (defn- sel-extend! [c r]
   (sel-set! (let [rs (:ranges @SEL)]
               (if (seq rs) (conj (pop rs) (assoc (peek rs) :f [c r])) [{:a [c r] :f [c r]}]))))
+
+(defn- in-range? [c r rng]
+  (let [[c0 r0 c1 r1] (rng-norm rng)] (and (<= c0 c c1) (<= r0 r r1))))
+
+(defn- sel-toggle!
+  "Ctrl/⌘+click: if the cell is already selected, DESELECT it (drop the ranges
+   covering it); otherwise add it as a new range. So a second ⌘+click on a cell
+   removes it instead of stacking another overlapping range."
+  [c r]
+  (let [rs (:ranges @SEL)]
+    (if (some #(in-range? c r %) rs)
+      (sel-set! (vec (remove #(in-range? c r %) rs)))
+      (sel-set! (conj rs {:a [c r] :f [c r]})))))
 
 (defn- sel-ranges-str []
   (str/join " " (for [rng (:ranges @SEL) :let [[c0 r0 c1 r1] (rng-norm rng)]]
@@ -265,7 +277,7 @@
   (when-let [[c r] (cell-cr (.-target e))]
     (cond
       (.-shiftKey e)                   (sel-extend! c r)
-      (or (.-ctrlKey e) (.-metaKey e)) (sel-add! c r)
+      (or (.-ctrlKey e) (.-metaKey e)) (sel-toggle! c r)
       :else                            (sel-single! c r))))
 
 ;; --- the single floating editor --------------------------------------------

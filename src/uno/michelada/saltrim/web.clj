@@ -1435,6 +1435,21 @@
                 (signals! gen {:err (str cell " " (name prop) " style: "
                                          (pretty-err (.getMessage e)))})))))))))
 
+(defn- selected-cells
+  "All distinct cell addresses across the space-separated \"TL:BR\" ranges in
+   `selcells` (handles multi-range)."
+  [selcells]
+  (->> (str/split (str selcells) #"\s+")
+       (remove str/blank?)
+       (mapcat (fn [r] (let [[a b] (str/split r #":")] (addr/range-cells a (or b a)))))
+       distinct))
+
+(defn- sel-topleft
+  "Top-left [c0 r0] of the bounding box of all selected cells, or nil when empty."
+  [selcells]
+  (let [crs (map (fn [a] (let [{:keys [ci ri]} (addr/parse a)] [ci ri])) (selected-cells selcells))]
+    (when (seq crs) [(apply min (map first crs)) (apply min (map second crs))])))
+
 (defn- handle-clear
   "Clear every cell in the selection ($selcells = space-separated \"TL:BR\"
    ranges). Each cleared cell records an undo entry (so Ctrl+Z restores it),
@@ -1446,11 +1461,7 @@
       (if (not= :read-write (:level rec))
         (signals! gen {:err "read-only access — you can't edit this sheet"})
         (let [sh    (:sh rec)
-              cells (->> (str/split (str selcells) #"\s+")
-                         (remove str/blank?)
-                         (mapcat (fn [r] (let [[a b] (str/split r #":")]
-                                           (addr/range-cells a (or b a)))))
-                         distinct)]
+              cells (selected-cells selcells)]
           (when (seq cells)
             (locking edit-lock
               (try
@@ -1468,35 +1479,31 @@
                   (signals! gen {:err (pretty-err (.getMessage e))}))))))))))
 
 ;; --- clipboard (copy / cut / paste) ---------------------------------------
-;; A per-session clipboard ({:origin [c0 r0] :w :h :cells [{:dc :dr :value}]}),
-;; captured server-side so it works for off-window ranges. v1 is a single
-;; rectangular range, value-level; paste shifts formula refs RELATIVE to the move
-;; (see formula/shift-refs). Cut = copy + clear. (Multi-range, style/granularity
-;; and cross-sheet are follow-ups.)
+;; A per-session clipboard ({:origin [c0 r0] :cells [{:dc :dr :value}]}), captured
+;; server-side so it works for off-window ranges. Captures ALL selected cells
+;; (multi-range too), each keyed by its offset from the selection's bounding-box
+;; top-left, so the relative layout is preserved on paste. Value-level; paste
+;; shifts formula refs RELATIVE to the move (see formula/shift-refs). Cut = copy +
+;; clear. (Paste granularity, style/format in the clip and cross-sheet are
+;; follow-ups.)
 
-(defn- first-range
-  "Top-left/bottom-right [c0 r0 c1 r1] of the FIRST \"TL:BR\" range in `selcells`,
-   or nil."
-  [selcells]
-  (when-let [r (->> (str/split (str selcells) #"\s+") (remove str/blank?) first)]
-    (let [[a b] (str/split r #":")
-          {ca :ci ra :ri} (addr/parse a)
-          {cb :ci rb :ri} (addr/parse (or b a))]
-      [(min ca cb) (min ra rb) (max ca cb) (max ra rb)])))
-
-(defn- capture-clip [sh c0 r0 c1 r1]
-  {:origin [c0 r0] :w (inc (- c1 c0)) :h (inc (- r1 r0))
-   :cells (vec (for [r (range r0 (inc r1)) c (range c0 (inc c1))
-                     :let [a (addr/make c r) v (sheet/raw sh a)]
-                     :when v]
-                 {:dc (- c c0) :dr (- r r0) :value v}))})
+(defn- capture-clip
+  "Capture all non-empty selected cells, keyed by offset from the selection's
+   bounding-box top-left."
+  [sh selcells]
+  (when-let [[c0 r0] (sel-topleft selcells)]
+    {:origin [c0 r0]
+     :cells  (vec (for [a (selected-cells selcells)
+                        :let [{:keys [ci ri]} (addr/parse a) v (sheet/raw sh a)]
+                        :when v]
+                    {:dc (- ci c0) :dr (- ri r0) :value v}))}))
 
 (defn- handle-copy [req]
   (with-access req
     (fn [uid sheet-id rec {:keys [sid selcells]} gen]
       (ensure-session! sid sheet-id uid (:token rec))
-      (when-let [[c0 r0 c1 r1] (first-range selcells)]
-        (swap! sessions* assoc-in [sid :clip] (capture-clip (:sh rec) c0 r0 c1 r1)))
+      (when-let [clip (capture-clip (:sh rec) selcells)]
+        (swap! sessions* assoc-in [sid :clip] clip))
       (signals! gen {:err ""}))))                  ; copy is silent (like everywhere)
 
 (defn- paste-cells!
@@ -1524,7 +1531,7 @@
         (signals! gen {:err "read-only access — you can't edit this sheet"})
         (let [sh   (:sh rec)
               clip (get-in @sessions* [sid :clip])
-              tgt  (first-range selcells)]
+              tgt  (sel-topleft selcells)]
           (when (and clip tgt (seq (:cells clip)))
             (locking edit-lock
               (try
@@ -1541,9 +1548,8 @@
       (ensure-session! sid sheet-id uid (:token rec))
       (if (not= :read-write (:level rec))
         (signals! gen {:err "read-only access — you can't edit this sheet"})
-        (when-let [[c0 r0 c1 r1] (first-range selcells)]
-          (let [sh   (:sh rec)
-                clip (capture-clip sh c0 r0 c1 r1)]
+        (when-let [clip (capture-clip (:sh rec) selcells)]
+          (let [sh (:sh rec) [c0 r0] (:origin clip)]
             (swap! sessions* assoc-in [sid :clip] clip)
             (locking edit-lock
               (try
