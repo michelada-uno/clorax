@@ -136,6 +136,30 @@
   (is (= ["a" "b"] (store/list-names "dev-ann")))
   (is (empty? (store/list-names "dev-nobody"))))
 
+(deftest load-record-asof-snapshot
+  (register!)
+  (let [s (sheet/create-sheet)]
+    (sheet/set-cell! s "A1" "10")
+    (sheet/set-cell! s "B1" "=(* #cell A1 2)")
+    (store/save! id s {:author "dev-ann"}))
+  (let [t0 (:tx (first (db/branch-revisions id "main")))]   ; first revision
+    ;; change A1 after t0
+    (let [s (store/load-sheet id)]
+      (sheet/settle! s)
+      (sheet/set-cell! s "A1" "100")
+      (sheet/settle! s)
+      (store/save! id s {:author "dev-ann"}))
+    (testing "as-of snapshot rebuilds the historical values + live formulas"
+      (let [s0 (:sh (store/load-record-asof id "main" t0))]
+        (sheet/settle! s0)
+        (is (= 10 (sheet/value s0 "A1")) "A1 as of t0")
+        (is (= 20 (sheet/value s0 "B1")) "the formula recomputes against the historical A1")))
+    (testing "the live sheet is unaffected"
+      (let [s2 (store/load-sheet id)]
+        (sheet/settle! s2)
+        (is (= 100 (sheet/value s2 "A1")))
+        (is (= 200 (sheet/value s2 "B1")))))))
+
 (deftest branch-aware-save-load
   (register!)
   ;; seed main

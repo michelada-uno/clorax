@@ -132,6 +132,17 @@
                 (let [rec (sheet-rec id branch owner)]
                   (when (db/access-level uid id token) rec)))))))
 
+(defn- can-read?
+  "Whether `uid` (with optional link `token`) may READ (id, branch): the sheet is
+   registered, the branch exists, and the user owns it or has ACL access. Used by
+   the read-only as-of views, which render a transient historical sheet WITHOUT
+   loading or registering a live room."
+  [uid id branch token]
+  (boolean
+   (and uid (store/valid-id? id) (store/exists? id) (db/branch-exists? id branch)
+        (let [[owner _] (store/split-id id)]
+          (or (= owner uid) (db/access-level uid id token))))))
+
 ;; Sessions: one per client. Hold the sheet id + per-session viewport (view/dims)
 ;; so concurrent clients on the same sheet keep independent scroll. Each carries
 ;; :last-seen (ms) — real activity (edits/scrolls) refreshes it; a server-side
@@ -536,7 +547,9 @@
              "switches branches; people on different branches don't see each other's cells. The owner's "
              [:span {:style kbd} "⑂"] " button forks the current branch into a new one, deletes a "
              "non-main branch, or merges another branch in — a 3-way merge that auto-applies "
-             "non-overlapping changes and lets you resolve conflicts cell by cell."]
+             "non-overlapping changes and lets you resolve conflicts cell by cell. The "
+             [:span {:style kbd} "🕘"] " button opens an earlier revision as a read-only snapshot "
+             "(time-travel); Back to live returns to the current sheet."]
 
             [:div {:style h3} "Sharing"]
             [:p {:style p} "The link / lock button (top bar, owner only) shares the sheet by capability "
@@ -718,11 +731,86 @@
                        :style "color:var(--danger);border-color:var(--danger);"}
               (str "Delete “" branch "”")]])]])))))
 
-(defn- page [sh storage-id sname branch uid link-token]
+;; --- as-of / history viewing (PR C) ---------------------------------------
+
+(defn- fmt-ts
+  "An #inst (java.util.Date) -> \"yyyy-MM-dd HH:mm:ss\" local, or nil."
+  [inst]
+  (when inst
+    (.format (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss")
+             (java.time.LocalDateTime/ofInstant (.toInstant ^java.util.Date inst)
+                                                (java.time.ZoneId/systemDefault)))))
+
+(defn- sheet-href
+  "The sheet's own branch-aware URL (owners reach theirs by ?s=; a link visitor
+   keeps ?t=; a shared viewer keeps ?u=&s=; non-main adds &b=). History links
+   append &at=<tx>."
+  [storage-id sname branch link-token owner?]
+  (str (cond link-token (str "/?t=" link-token)
+             owner?      (str "/?s=" sname)
+             :else       (str "/?u=" (first (store/split-id storage-id)) "&s=" sname))
+       (when (not= branch db/MAIN) (str "&b=" branch))))
+
+(defn- revision-select
+  "A <select> of revisions (newest first) that navigates on change; `cur` = the
+   tx currently viewed (nil = live, selects the 'current' option)."
+  [href revisions cur]
+  [:select {:class "tool" :title "view an earlier revision (read-only)"
+            :data-on:change "el.value && (location.href = el.value)"
+            :style "max-width:14rem;"}
+   [:option {:value href :selected (nil? cur)} "● current (live)"]
+   (for [{:keys [tx inst]} revisions]
+     [:option {:value (str href "&at=" tx) :selected (= tx cur)}
+      (str "🕘 " (fmt-ts inst))])])
+
+(defn- asof-banner
+  "Read-only banner shown while viewing a past revision: what/when + a revision
+   picker + Back-to-live."
+  [storage-id sname branch at revisions link-token owner?]
+  (let [href (sheet-href storage-id sname branch link-token owner?)
+        cur  (parse-long (str at))
+        when-s (some->> revisions (filter #(= (:tx %) cur)) first :inst fmt-ts)]
+    [:div {:style (str "display:flex;align-items:center;gap:.5rem;flex:1;"
+                       "background:#fff8e1;border:1px solid #e6c200;border-radius:var(--radius);"
+                       "padding:4px 8px;font:12px sans-serif;color:#7a5b00;")}
+     [:span "🕘 " [:strong (str "🌿 " branch)] " as of "
+      [:strong (or when-s (str "tx " cur))] " — read-only."]
+     (revision-select href revisions cur)
+     [:a {:class "btn" :href href :style "text-decoration:none;"} "Back to live"]]))
+
+(defn- history-modal
+  "The 🕘 history modal (live page): a list of revisions, each opening a read-only
+   as-of view. Toggled by $histpanel."
+  [storage-id sname branch revisions link-token owner?]
+  (let [href (sheet-href storage-id sname branch link-token owner?)]
+    [:div {:data-show "$histpanel" :data-on:click "$histpanel=false"
+           :style (str "position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.35);"
+                       "display:flex;align-items:flex-start;justify-content:center;padding:12vh 1rem;")}
+     [:div {:data-on:click "evt.stopPropagation()"
+            :style (str "background:var(--bg);border:1px solid var(--line);border-radius:8px;"
+                        "box-shadow:0 8px 32px rgba(0,0,0,.25);max-width:26rem;width:100%;"
+                        "padding:1rem 1.1rem;font:13px sans-serif;color:var(--fg);")}
+      [:div {:style "display:flex;align-items:center;margin-bottom:.5rem;"}
+       [:h2 {:style "margin:0;font:600 15px sans-serif;flex:1;"} (str "History — 🌿 " branch)]
+       [:button {:class "btn" :data-on:click "$histpanel=false" :title "close"} "✕"]]
+      [:p {:style "color:var(--muted);margin:.2rem 0 .6rem;"}
+       "Open this branch as it was at an earlier point (read-only)."]
+      (if (empty? revisions)
+        [:p {:style "color:var(--muted);"} "No history yet — make some edits first."]
+        [:div {:style "max-height:40vh;overflow:auto;"}
+         (for [{:keys [tx inst]} revisions]
+           [:a {:href (str href "&at=" tx)
+                :style (str "display:block;padding:.4rem .2rem;border-top:1px solid var(--grid);"
+                            "text-decoration:none;color:var(--fg);font:12px monospace;")}
+            (str "🕘 " (fmt-ts inst))])])]]))
+
+(defn- page [sh storage-id sname branch at uid link-token]
   ;; one session id seeds BOTH $sid (sent on /stream, registers the session) and
   ;; #ctl's data-sid (read by the unload beacon) — they must be the same value.
   (let [sid    (str (random-uuid))
-        owner? (= uid (first (store/split-id storage-id)))]
+        owner? (= uid (first (store/split-id storage-id)))
+        asof?  (boolean at)                       ; read-only historical view?
+        revisions (db/branch-revisions storage-id branch)]
    (str
     "<!doctype html>"
    (h/html
@@ -826,6 +914,10 @@
              ;; the working branch (rides in every POST so the server routes to
              ;; the right (sheet,branch) room); seeded from the resolved &b=.
              :data-signals:branch (format "'%s'" branch)
+             ;; as-of (PR C): the tx being viewed, or "" for live. When set, every
+             ;; POST carries it and the server forces read-only access.
+             :data-signals:at (format "'%s'" (or at ""))
+             :data-signals:histpanel "false"     ; 🕘 history modal open? (live page)
              :data-signals:bname "''"            ; new-branch name (fork modal)
              :data-signals:branchact "''"        ; fork | delete | merge-preview/apply
              :data-signals:branchpanel "false"   ; 🌿 modal open?
@@ -872,40 +964,44 @@
                          "color:#fff;padding:.6rem .9rem;border-radius:6px;font:13px sans-serif;"
                          "cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3);z-index:20;")}]
       (h/raw (help-html))
-      (h/raw (defs-html storage-id))
-      (h/raw (bigedit-html))
-      (when owner? (h/raw (props-html)))
+      (when-not asof? (h/raw (defs-html storage-id)))
+      (when-not asof? (h/raw (bigedit-html)))
+      (when (and owner? (not asof?)) (h/raw (props-html)))
+      (when-not asof? (history-modal storage-id sname branch revisions link-token owner?))
       ;; ── toolbar row 1: sheet management + sharing + identity ───────────
       [:div {:class "toolrow"}
        (sheet-picker uid storage-id sname)
-       [:input {:id "sheetbox" :class "tool" :placeholder "new sheet…"
-                :data-on:keydown "evt.key==='Enter' && el.value && (location.href='/?s='+el.value)"
-                :title "type a name + Enter to create/open one of your sheets"
-                :style "width:6rem;"}]
-       ;; branch picker + owner-only fork/delete
-       (branch-bar uid storage-id sname branch link-token owner?)
-       ;; navigate (full reload) when the server sets $goto (fork/delete result).
-       ;; no signal refs besides $goto ⇒ runs only when $goto changes (not on load
-       ;; while it is "").
-       [:div {:id "goto" :data-effect "$goto && window.location.assign($goto)" :style "display:none;"}]
-       ;; sharing toggle / badge (patched back by POST /share)
-       (h/raw (share-html uid storage-id link-token))
-       [:span {:class "spacer"}]
-       ;; section toggle: show/hide the format row (the pattern future control
-       ;; rows — clipboard, data — reuse, so the bar never just grows)
-       [:button {:class "btn" :data-class:active "$fmtbar"
-                 :data-on:click "$fmtbar = !$fmtbar" :title "format / style controls"} "🎨"]
-       [:button {:class "btn" :data-on:click "$defspanel=true" :title "sheet definitions (reusable functions)"} "ƒ"]
-       (when owner?
-         [:button {:class "btn" :data-on:click "$propspanel=true" :title "sheet properties"} "⚙"])
-       [:button {:class "btn" :data-on:click "$help=true" :title "help / quick guide"} "?"]
+       ;; the branch picker stays in as-of (you can switch branch); its owner
+       ;; fork/merge/delete controls are hidden while viewing read-only history.
+       (branch-bar uid storage-id sname branch link-token (and owner? (not asof?)))
+       (if asof?
+         ;; read-only history view: a banner + revision picker + Back-to-live
+         (asof-banner storage-id sname branch at revisions link-token owner?)
+         ;; live: new-sheet, sharing, format/defs/props, help, history
+         (list
+          [:input {:id "sheetbox" :class "tool" :placeholder "new sheet…"
+                   :data-on:keydown "evt.key==='Enter' && el.value && (location.href='/?s='+el.value)"
+                   :title "type a name + Enter to create/open one of your sheets"
+                   :style "width:6rem;"}]
+          ;; navigate (full reload) when the server sets $goto (fork/delete result)
+          [:div {:id "goto" :data-effect "$goto && window.location.assign($goto)" :style "display:none;"}]
+          (h/raw (share-html uid storage-id link-token))
+          [:span {:class "spacer"}]
+          [:button {:class "btn" :data-class:active "$fmtbar"
+                    :data-on:click "$fmtbar = !$fmtbar" :title "format / style controls"} "🎨"]
+          [:button {:class "btn" :data-on:click "$defspanel=true" :title "sheet definitions (reusable functions)"} "ƒ"]
+          (when owner?
+            [:button {:class "btn" :data-on:click "$propspanel=true" :title "sheet properties"} "⚙"])
+          [:button {:class "btn" :data-on:click "$histpanel=true" :title "history — view an earlier revision"} "🕘"]
+          [:button {:class "btn" :data-on:click "$help=true" :title "help / quick guide"} "?"]))
        ;; who am I + sign out
        [:span {:style "font:12px sans-serif;color:var(--muted);white-space:nowrap;"}
         (or (:name (auth/user-info uid)) uid)]
        [:form {:method "post" :action "/logout" :style "margin:0;"}
         [:button {:class "btn"} "sign out"]]]
-      ;; ── toolbar row 2: cell reference + formula bar ────────────────────
-      [:div {:class "toolrow"}
+      ;; ── toolbar row 2: cell reference + formula bar (live only) ─────────
+      (when-not asof?
+       [:div {:class "toolrow"}
        ;; address box: $sel via data-bind; Enter jumps (app.cljs scrolls there +
        ;; selects). The keydown listener is attached in app.cljs (a scroll action).
        [:input {:id "addrbox" :class "tool mono" :data-bind:sel "" :placeholder "A1"
@@ -919,13 +1015,14 @@
                 :data-on:keydown "evt.key==='Enter' && ($cell=$sel, @post('/cell'))"
                 :data-on:blur "$cell=$sel, @post('/cell'), $edit=false, @post('/presence')"
                 :style "flex:1;"}]
-       [:button {:class "btn" :title "big editor" :data-on:click "$big=$v, $bigwhat='v', $bigedit=true"} "⤢"]]
+       [:button {:class "btn" :title "big editor" :data-on:click "$big=$v, $bigwhat='v', $bigedit=true"} "⤢"]])
       ;; ── toolbar row 3: style of the selected cell (collapsible) ────────
       ;; prop dropdown + a literal-or-=formula source, applied to $sel on Enter
       ;; (like the formula bar — no separate button). $val is the cell's own
       ;; value, e.g. =(if (> $val 100) "tomato" "white"). Hidden until the 🎨
       ;; toggle ($fmtbar) reveals it — keeps the default bar lean.
-      [:div {:class "toolrow" :data-show "$fmtbar"}
+      (when-not asof?
+       [:div {:class "toolrow" :data-show "$fmtbar"}
        [:select {:id "stylepropbox" :class "tool" :data-bind:styleprop ""
                  :data-on:change
                  (str "const c=document.getElementById('c_'+$sel);"
@@ -937,7 +1034,7 @@
                 :placeholder "color / mask / =formula (use $val) — Enter to apply"
                 :data-on:keydown "evt.key==='Enter' && ($cell=$sel, @post('/style'))"
                 :style "flex:1;"}]
-       [:button {:class "btn" :title "big editor" :data-on:click "$big=$stylesrc, $bigwhat='style', $bigedit=true"} "⤢"]]
+       [:button {:class "btn" :title "big editor" :data-on:click "$big=$stylesrc, $bigwhat='style', $bigedit=true"} "⤢"]])
       ;; logical-scroll viewport (custom wheel + scrollbars in /app.js)
       (grid-layers sh {:r0 0 :c0 0})
 
@@ -948,6 +1045,16 @@
       ;; pulling the carried data off evt.detail. The persistent collaboration
       ;; stream lives on its OWN element (#streamer) so app.cljs can pick its
       ;; datastar-fetch lifecycle apart from the @posts for reconnect.
+      ;; live only: the persistent collaboration stream + the full control bridge.
+      ;; In a read-only as-of view there is no live room, so we open no stream and
+      ;; expose ONLY scroll (→ /viewat, which renders the historical window). Every
+      ;; mutating sr-* event is simply absent, so nothing can edit the past — and
+      ;; the server also forces read-only when $at is set (belt and suspenders).
+      (when asof?
+        [:div {:id "ctl" :data-sid sid :style "display:none;"
+               :data-on:sr-view__window "$r0=evt.detail.r0, $c0=evt.detail.c0, @post('/viewat')"}])
+      (when-not asof?
+       (list
       [:div {:id "streamer" :data-on:sr-open__window "@get('/stream')"
              :style "display:none;"} ""]
       [:div {:id "ctl" :data-sid sid :style "display:none;"
@@ -976,7 +1083,7 @@
              :data-on:sr-edit__window
              (str "const c=document.getElementById('c_'+evt.detail.addr);"
                   "$sel=evt.detail.addr; $v=c?(c.dataset.raw||''):'';"
-                  "$edit=true; $celledit=true; @post('/presence')")} ""]]]))))
+                  "$edit=true; $celledit=true; @post('/presence')")} ""]))]]))))
 
 ;; --- SSE (official Datastar SDK) ----------------------------------------
 
@@ -1399,6 +1506,11 @@
   [sig]
   (let [b (:branch sig)] (if (store/valid-branch? b) b db/MAIN)))
 
+(defn- sig-at
+  "The as-of transaction from request signals ($at) as a long, or nil for live."
+  [sig]
+  (some-> (:at sig) str not-empty parse-long))
+
 (defn- with-access
   "POST handlers: resolve the signed-in user and sheet access from the request
    signals (the link token rides in $link, the branch in $branch). On success
@@ -1414,8 +1526,12 @@
         rec      (accessible-rec uid sheet-id branch token)]
     (if-not rec
       (deny req (if uid "no access to this sheet" "not signed in"))
-      (let [rec (assoc rec :level (level-of uid sheet-id token rec) :token token
-                       :branch branch :room [sheet-id branch])]
+      ;; a request carrying $at is a read-only as-of view: force :read so every
+      ;; edit handler's write-guard rejects it (it targets the live room, which
+      ;; the as-of view must never mutate).
+      (let [level (if (sig-at sig) :read (level-of uid sheet-id token rec))
+            rec   (assoc rec :level level :token token
+                        :branch branch :room [sheet-id branch])]
         (sse req (fn [gen] (f uid sheet-id rec sig gen)))))))
 
 (defn- with-owner
@@ -1704,6 +1820,32 @@
         ;; relative to (c0,r0); /app.js translates + sizes the scrollbars from
         ;; #meta totals (no giant spacer to resize).
         (render-window! gen sid (:room rec) sh view)))))
+
+(defn- handle-viewat
+  "Read-only scroll for an as-of view: re-render the window of (sheet, branch) AS
+   OF $at from a TRANSIENT historical sheet — no room, no session, no presence,
+   never mutates. Built per request (the snapshot is request-scoped)."
+  [req]
+  (let [uid      (auth/req->uid req)
+        sig      (read-signals req)
+        sheet-id (:sheet sig)
+        branch   (sig-branch sig)
+        at       (sig-at sig)
+        token    (not-empty (str (:link sig)))
+        r0 (max 0 (long (or (:r0 sig) 0)))
+        c0 (max 0 (long (or (:c0 sig) 0)))]
+    (if-not (and at (can-read? uid sheet-id branch token))
+      (deny req "no access")
+      (if-let [{:keys [sh]} (store/load-record-asof sheet-id branch at)]
+        (sse req (fn [gen]
+                   (try
+                     (let [[cis ris] (window r0 c0)]
+                       (patch-inner! gen "#cells"   (cells-html sh cis ris))
+                       (patch-inner! gen "#colhead" (colhead-html sh cis))
+                       (patch-inner! gen "#rowhead" (rowhead-html sh ris))
+                       (d*/patch-elements! gen (meta-html sh r0 c0)))   ; #meta by id
+                     (finally (sheet/close! sh)))))
+        (deny req "no such revision")))))
 
 (defn- handle-size [req]
   (with-access req
@@ -2328,12 +2470,25 @@
             branch      (let [b (qparam req "b")
                               b (if (store/valid-branch? b) b db/MAIN)]
                           (if (and id (db/branch-exists? id b)) b db/MAIN))
-            rec         (when id (accessible-rec uid id branch token))]
-        (if rec
-          {:status 200 :headers {"Content-Type" "text/html"}
-           :body (page (:sh rec) id sname branch uid token)}
-          {:status 403 :headers {"Content-Type" "text/html"}
-           :body (denied-page uid)})))))
+            ;; &at=<tx> → a READ-ONLY snapshot of (sheet, branch) as of that tx.
+            at          (some-> (qparam req "at") parse-long)]
+        (cond
+          ;; as-of view: render a transient historical sheet (no live room).
+          (and id at (can-read? uid id branch token))
+          (if-let [{:keys [sh]} (store/load-record-asof id branch at)]
+            (try {:status 200 :headers {"Content-Type" "text/html"}
+                  :body (page sh id sname branch at uid token)}
+                 (finally (sheet/close! sh)))   ; historical sheet is request-scoped
+            {:status 403 :headers {"Content-Type" "text/html"} :body (denied-page uid)})
+
+          ;; live view
+          :else
+          (let [rec (when id (accessible-rec uid id branch token))]
+            (if rec
+              {:status 200 :headers {"Content-Type" "text/html"}
+               :body (page (:sh rec) id sname branch nil uid token)}
+              {:status 403 :headers {"Content-Type" "text/html"}
+               :body (denied-page uid)})))))))
 
 (defn- app [req]
   (or
@@ -2394,6 +2549,7 @@
     [:post "/defadd"]     (handle-defadd req)
     [:post "/defdel"]     (handle-defdel req)
     [:post "/view"]       (handle-view req)
+    [:post "/viewat"]     (handle-viewat req)
     [:post "/presence"]   (handle-presence req)
     [:post "/share"]      (handle-share req)
     [:post "/branch"]     (handle-branch req)

@@ -624,3 +624,22 @@
       (and (:parent ls) (= (:parent ls) (:parent lt)) (:base-tx ls) (:base-tx lt))
       (sheet-doc-asof sheet-id (:parent ls) (min (:base-tx ls) (:base-tx lt)))
       :else nil)))
+
+(defn branch-revisions
+  "Up to `limit` (default 50) most-recent REVISIONS of (sheet-id, branch): the
+   distinct transactions that changed any cellprop on this branch (assertions or
+   retractions), as {:tx :inst}, newest first. Each is a point you can view the
+   sheet `as-of`. Reads history (`:keep-history?`)."
+  ([sheet-id branch] (branch-revisions sheet-id branch 50))
+  ([sheet-id branch limit]
+   (->> (d/q '[:find ?tx ?inst
+               :in $ ?sid ?br
+               :where [?sh :sheet/id ?sid]
+                      [?c :cellprop/sheet ?sh] [?c :cellprop/branch ?br]
+                      [?c :cellprop/src _ ?tx]            ; any change to a src on this branch
+                      [?tx :db/txInstant ?inst]]
+             (d/history @conn) sheet-id branch)
+        ;; the query result is already a set (unique per [tx inst], i.e. per tx)
+        (sort-by first >)
+        (take limit)
+        (mapv (fn [[tx inst]] {:tx tx :inst inst})))))

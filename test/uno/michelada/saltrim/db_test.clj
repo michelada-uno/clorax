@@ -265,6 +265,36 @@
     ;; exp and other are siblings off main → common ancestor IS resolvable
     (is (some? (db/merge-base S "exp" "other")) "siblings share their parent as base")))
 
+(deftest branch-revisions-timeline
+  (db/upsert-user! {:uid "dev-ann" :name "Ann"})
+  (db/ensure-sheet! S "dev-ann" "s")
+  (testing "no revisions before any content"
+    (is (empty? (db/branch-revisions S "main"))))
+  (db/save-doc! S {"A1" {:value "1"}} "dev-ann")          ; tx a
+  (db/save-doc! S {"A1" {:value "2"} "B1" {:value "9"}} "dev-ann")  ; tx b
+  (db/save-doc! S {"A1" {:value "3"} "B1" {:value "9"}} "dev-ann")  ; tx c
+  (let [revs (db/branch-revisions S "main")]
+    (is (= 3 (count revs)) "one revision per changing tx")
+    (is (apply > (map :tx revs)) "newest first")
+    (is (every? :inst revs) "each carries a txInstant"))
+  (testing "limit caps the list"
+    (is (= 2 (count (db/branch-revisions S "main" 2)))))
+  (testing "revisions are per-branch"
+    (db/fork-branch! S "main" "exp")
+    (db/save-doc! S "exp" {"A1" {:value "99"}} "dev-ann")
+    (is (>= (count (db/branch-revisions S "exp")) 1))))
+
+(deftest sheet-doc-asof-reconstructs-history
+  (db/upsert-user! {:uid "dev-ann" :name "Ann"})
+  (db/ensure-sheet! S "dev-ann" "s")
+  (db/save-doc! S {"A1" {:value "1"}} "dev-ann")
+  (let [revs (db/branch-revisions S "main")
+        t0   (:tx (first revs))]                            ; only one rev so far
+    (db/save-doc! S {"A1" {:value "2"} "B1" {:value "new"}} "dev-ann")
+    (is (= "2" (get-in (db/sheet-doc S "main") ["A1" :value])) "current is 2")
+    (is (= "1" (get-in (db/sheet-doc-asof S "main" t0) ["A1" :value])) "as-of t0 is 1")
+    (is (nil? (get-in (db/sheet-doc-asof S "main" t0) ["B1" :value])) "B1 absent at t0")))
+
 (deftest delete-branch-isolation
   (db/upsert-user! {:uid "dev-ann" :name "Ann"})
   (db/ensure-sheet! S "dev-ann" "s")

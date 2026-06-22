@@ -268,6 +268,12 @@ lineage) or deletes (`db/delete-branch!`, no resurrection) via `/branch`, with a
 common ancestor resolved from fork lineage via `as-of` (`db/merge-base`); the
 pure `merge` ns classifies each cell-property into auto-merge vs conflict; the
 🌿 modal previews (clean count + per-conflict take-source checkbox → `$mergetake`)
-and applies onto the target engine (live + saved + broadcast). **Next: optional
-as-of viewing (PR C)** — read-only time-travel via per-prop history. Cheap wins:
-dependency-graph view, cell assertions. See `TECHDEBT.md` for deferred items.
+and applies onto the target engine (live + saved + broadcast). **As-of viewing —
+PR C** is DONE: read-only time-travel. `&at=<tx>`/`$at` render a sheet `as-of` a
+past transaction from a TRANSIENT snapshot (`db/branch-revisions` lists the
+points, `db/sheet-doc-asof`→`store/load-record-asof` rebuilds it); the as-of page
+is request-scoped (no live room/stream, scroll via `/viewat`), edits refused
+(`$at`→`:read`); a 🕘 modal enters it, a banner+picker+Back-to-live drive it. The
+**git-like branching boss fight is complete** (switch/fork/merge/as-of). Cheap
+wins next: dependency-graph view, cell assertions. See `TECHDEBT.md` for deferred
+items.

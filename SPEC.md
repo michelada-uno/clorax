@@ -123,6 +123,8 @@ await chain).
   instant) so a later 3-way merge can reconstruct the common-ancestor document
   via `as-of` base-tx. `db/branch-names`/`branch-exists?` list branches (MAIN
   always exists); `db/delete-branch!` retracts a non-main branch's datoms.
+  `db/branch-revisions` lists a branch's change transactions and
+  `db/sheet-doc-asof` rebuilds its document at any past tx (read-only history).
 - `save!` is **diff-based** — it compares the runtime document against the db and
   transacts only changed props (+ retracts removed). Required: with
   `:keep-history? true`, re-asserting an unchanged datom is *not* a no-op (it logs
@@ -269,6 +271,8 @@ that the client `translate`s.
 - `POST /merge` — owner-only 3-way merge of `$mergefrom` into the current branch
   (`$branchact`: preview → patch `#mergeresult`; apply → take auto + the
   `$mergetake` conflicts from source).
+- `POST /viewat` — read-only scroll for an as-of view: re-render the window of
+  (sheet, branch) as of `$at` from a transient historical sheet (no room).
 - `GET /login`, `GET /auth/<provider>[/callback]`, `GET /auth/dev?name=`,
   `POST /logout` — identity (see above).
 - `POST /share` — owner-only sharing mutation (`$shareact`: link / rotate /
@@ -332,6 +336,15 @@ that the client `translate`s.
   re-persist (resurrect) the deleted cells, and `$goto`s back to main.
 - Owner-only is enforced by `with-owner` (same gate as sharing/properties);
   editors can switch to and edit any existing branch (access is per-sheet).
+- **As-of viewing** (`&at=<tx>` / `$at`): a read-only snapshot of (sheet, branch)
+  at a past transaction. `db/branch-revisions` lists change-points from history;
+  `db/sheet-doc-asof` → `store/load-record-asof` rebuilds a TRANSIENT sheet at
+  that tx. The as-of page is **request-scoped** — it loads no live room, opens no
+  stream, and exposes only scroll (`/viewat`, which re-renders the historical
+  window from a fresh transient sheet). Edits can't happen (controls hidden; and
+  `with-access` forces `:level :read` whenever `$at` is set), so the past is
+  never mutated. A 🕘 modal (live) enters it; a banner + revision picker +
+  Back-to-live drive it.
 - **Merge** (`POST /merge`, owner-only): brings a source branch INTO the current
   one. `db/merge-base` resolves the common-ancestor document from fork lineage
   (`:branch/parent` + `:branch/base-tx`) via `as-of` — source-of-target,
@@ -412,7 +425,9 @@ To cut a release: `git tag v1.2.3 && git push origin v1.2.3`.
 
 See `TECHDEBT.md`. Highlights: `WIN-COLS/ROWS` fixed
 (not viewport-computed); last-write-wins within a branch (cross-branch is a 3-way
-**merge**, owner-driven); merge lineage is one-level (no deep-fork LCA); deleting
-a branch other collaborators are actively on strands them (they get denied + must
-reload to main); session-less sheets loaded by a bare `GET /` aren't swept;
+**merge**, owner-driven); merge lineage is one-level (no deep-fork LCA);
+as-of/history views use current defs+sizing (only cells are reconstructed) and
+rebuild a transient sheet per scroll; deleting a branch other collaborators are
+actively on strands them (they get denied + must reload to main); session-less
+sheets loaded by a bare `GET /` aren't swept;
 `/debug` is ungated; concurrent simultaneous edits can race a transient `#ERR`.

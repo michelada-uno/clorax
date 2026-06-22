@@ -103,8 +103,13 @@ visual of the copied range.
     **conflict** where both diverged. `/merge` preview shows the clean count +
     a conflict picker (tick to take source, default keep target); apply writes
     the chosen set onto the target engine (live + saved + broadcast).
-  - **As-of viewing** (PR C, optional) — read-only time-travel via per-prop
-    history.
+  - **As-of viewing** ✅ SHIPPED *(branch `feat/branch-history`, PR C)* —
+    read-only time-travel. A 🕘 history modal lists the branch's revisions
+    (`db/branch-revisions` from history); opening one renders the sheet `as-of`
+    that transaction (`db/sheet-doc-asof` → `store/load-record-asof`, a transient
+    snapshot) in a read-only banner view. Request-scoped — no live room/stream;
+    scroll re-renders via `/viewat`; edits are server-refused (`$at` forces
+    `:read`). The git-like branching boss fight is complete.
 - **Per-user undo/redo** ✅ SHIPPED *(branch `feat/undo-redo`)* — local
   *selective* undo: `Ctrl/⌘+Z` / `+Shift` (or `Ctrl+Y`) redo. The selective step
   is `sheet/undo-step` (skips a prop a collaborator overwrote, so it never
