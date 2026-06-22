@@ -161,6 +161,13 @@ git, for spreadsheets.
   same cell, you get a **conflict list** — tick the ones you want to take from
   the other branch (unticked keeps your current version), then Apply.
 
+### History (time-travel)
+
+The **🕘 button** opens a list of past revisions of the current branch. Pick one
+to view the sheet **as it was** at that moment — a read-only snapshot you can
+scroll around. A banner shows the timestamp; **Back to live** returns you to the
+current sheet. (Editing is disabled while viewing history.)
+
 ### Sharing & collaboration
 
 Owners get a link/lock button in the top bar to share a sheet by **capability

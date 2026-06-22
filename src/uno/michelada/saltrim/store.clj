@@ -97,6 +97,25 @@
        (sheet/settle! s)
        {:sh s :owner (first (split-id id)) :public false}))))
 
+(defn load-record-asof
+  "A READ-ONLY snapshot of (id, branch) AS OF transaction `tx`: cells reconstructed
+   from history (`db/sheet-doc-asof`), with the CURRENT branch defs/sizing (a
+   faithful value view — historical defs/sizing aren't reconstructed; see
+   TECHDEBT). Returns {:sh sheet :owner uid|nil}, or nil if the sheet isn't
+   registered. The caller must NOT persist this sheet (it's the past)."
+  [id branch tx]
+  (when (and (valid-id? id) (db/sheet-registered? id))
+    (let [s (sheet/create-sheet)
+          {:keys [dcw drh cols rows defs]} (db/branch-meta id branch)]
+      (when defs (sheet/set-defs! s (edn/read-string defs)))
+      (sheet/load-document! s (db/sheet-doc-asof id branch tx))
+      (sheet/load-sizing! s (or (some-> cols edn/read-string) {})
+                          (or (some-> rows edn/read-string) {}))
+      (when dcw (sheet/set-default-col-w! s dcw))
+      (when drh (sheet/set-default-row-h! s drh))
+      (sheet/settle! s)
+      {:sh s :owner (first (split-id id))})))
+
 (defn load-sheet
   "Load and rebuild just the sheet engine for `id` on `branch` (default main),
    or nil if none stored."

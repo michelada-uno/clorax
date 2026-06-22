@@ -262,3 +262,21 @@ REMAINING:
 - **Per-branch presence only.** Peers on a *different* branch are invisible to
   each other (by design — different working copies). There's no "who's on which
   branch" overview.
+
+## As-of / history viewing (PR C: feat/branch-history)
+
+- **Cells are reconstructed as-of, but defs + axis sizing use the CURRENT
+  branch-meta.** A historical view recomputes formulas against today's
+  definitions/sizes, so a value can differ slightly if a def changed since. Fine
+  for the common case (defs rarely change); reconstruct branch-meta as-of too if
+  fidelity matters.
+- **Transient sheet rebuilt per scroll.** `/viewat` builds a whole as-of sheet
+  (all cells at that tx) on every scroll, then closes it. Simple + leak-free, but
+  wasteful for large sheets / rapid scrolling. A short-lived cache keyed by
+  `[id branch tx]` (a read-only "room") would amortize it.
+- **Revisions = every change tx, capped at 50.** No grouping/labeling (e.g.
+  "fork point", author, or collapsing a burst of edits). The fork-copy shows as
+  one big revision. A richer timeline (author, message, grouping) is a follow-up.
+- **History views don't collaborate.** No stream/presence on an as-of view (by
+  design — it's a frozen snapshot); two people viewing the same revision don't
+  see each other.
