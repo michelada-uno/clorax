@@ -3,23 +3,34 @@
 
    Usage:
      clojure -T:build uber            ; -> target/saltrim-<version>.jar
-     clojure -T:build uber :version '\"1.2.3\"'
-   The CI release workflow passes the git tag as VERSION (see
-   .github/workflows/release.yml). Run it with:
+     clojure -T:build version         ; print the canonical version string
+     clojure -T:build uber :version '\"1.2.3\"'   ; manual override (rare)
+   Version has a single source of truth: `base-version` (major.minor, below) plus
+   the git commit count as the patch. The release workflow reads it via
+   `clojure -T:build version` (see .github/workflows/release.yml). Run the jar:
      java -jar target/saltrim-<version>.jar"
   (:require [clojure.tools.build.api :as b]))
 
 (def lib 'uno.michelada/saltrim)
 (def main 'uno.michelada.saltrim.web)
 
-(defn- version []
-  ;; CI sets VERSION from the pushed tag (vX.Y.Z -> X.Y.Z); locally we derive a
-  ;; dev version from the commit count so jar names are still unique.
-  (or (System/getenv "VERSION")
-      (format "0.2.%s-dev" (b/git-count-revs nil))))
+;; Single source of truth for the release line: major.minor live HERE and only
+;; here. The patch number is the git commit count — monotonic, never reset when
+;; the minor/major bumps — so the full version is e.g. "0.4.57". Cutting a new
+;; line is a one-string edit.
+(def base-version "0.4")
+
+(defn- compute-version []
+  (format "%s.%s" base-version (b/git-count-revs nil)))
+
+(defn version
+  "Print the canonical version (base-version + commit count). The release
+   workflow names the tag/jar from this, so build.clj stays the only source."
+  [_]
+  (println (compute-version)))
 
 (defn- ctx [opts]
-  (let [v (or (:version opts) (version))]
+  (let [v (or (:version opts) (compute-version))]
     (assoc opts
            :version   v
            :basis     (b/create-basis {:project "deps.edn"})
