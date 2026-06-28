@@ -300,9 +300,10 @@
 ;; follow-ups.)
 
 (defn- capture-clip
-  "Capture all non-empty selected cells, keyed by offset from the selection's
-   bounding-box top-left. `:w`/`:h` are the FULL selection footprint (including
-   empty cells) so a smaller clip can be tiled across a larger paste target."
+  "Capture the selected cells — value source AND style props ({prop raw}) — keyed
+   by offset from the selection's bounding-box top-left. `:w`/`:h` are the FULL
+   selection footprint (incl. empty cells) so a smaller clip can be tiled across a
+   larger paste target."
   [sh selcells]
   (when-let [[c0 r0] (sel-topleft selcells)]
     (let [cells (selected-cells selcells)
@@ -312,9 +313,11 @@
        :w (inc (- (apply max cis) c0))
        :h (inc (- (apply max ris) r0))
        :cells (vec (for [a cells
-                         :let [{:keys [ci ri]} (addr/parse a) v (sheet/raw sh a)]
-                         :when v]
-                     {:dc (- ci c0) :dr (- ri r0) :value v}))})))
+                         :let [{:keys [ci ri]} (addr/parse a)
+                               v      (sheet/raw sh a)
+                               styles (sheet/style-srcs sh a)]
+                         :when (or v (seq styles))]
+                     {:dc (- ci c0) :dr (- ri r0) :value v :styles styles}))})))
 
 (defn handle-copy [req]
   (with-access req
@@ -325,21 +328,32 @@
       (signals! gen {:err ""}))))                  ; copy is silent (like everywhere)
 
 (defn- paste-cells!
-  "Write `clip` so its top-left lands at (tc,tr): each cell's value, formula refs
-   shifted by the move. Records per-cell undo. Returns the affected addresses."
-  [sh sid clip tc tr]
-  (let [[oc orr] (:origin clip)
-        dc (- tc oc) dr (- tr orr)
-        affected (atom [])]
-    (doseq [{cdc :dc cdr :dr value :value} (:cells clip)
-            :let [a      (addr/make (+ tc cdc) (+ tr cdr))
-                  before (sheet/raw sh a)
-                  src    (if (str/starts-with? (str value) "=")
-                           (formula/shift-refs value dc dr) value)]]
-      (swap! affected into (cons a (sheet/dependents* sh a)))
-      (sheet/set-cell! sh a src)
-      (record-edit! sid a :value before (sheet/raw sh a)))
-    (distinct @affected)))
+  "Stamp `clip` with its top-left at (tc,tr): each captured cell's value AND style
+   props, formula refs shifted by the move. With `bounds` [tc0 tr0 tc1 tr1], cells
+   landing outside it are skipped (so tiling never spills past the target
+   selection). Records per-cell undo. Returns the affected addresses."
+  ([sh sid clip tc tr] (paste-cells! sh sid clip tc tr nil))
+  ([sh sid clip tc tr bounds]
+   (let [[oc orr] (:origin clip)
+         dc (- tc oc) dr (- tr orr)
+         shift (fn [s] (if (str/starts-with? (str s) "=") (formula/shift-refs s dc dr) s))
+         in?   (fn [ci ri] (or (nil? bounds)
+                               (let [[a b c d] bounds] (and (<= a ci c) (<= b ri d)))))
+         affected (atom [])]
+     (doseq [{cdc :dc cdr :dr value :value styles :styles} (:cells clip)
+             :let  [ci (+ tc cdc) ri (+ tr cdr)]
+             :when (in? ci ri)
+             :let  [a (addr/make ci ri)]]
+       (when value
+         (let [before (sheet/raw sh a)]
+           (sheet/set-cell! sh a (shift value))
+           (record-edit! sid a :value before (sheet/raw sh a))))
+       (doseq [[prop raw] styles
+               :let [before (get (sheet/style-srcs sh a) prop)]]
+         (sheet/set-style! sh a prop (shift raw))
+         (record-edit! sid a prop before (get (sheet/style-srcs sh a) prop)))
+       (swap! affected into (cons a (sheet/dependents* sh a))))
+     (distinct @affected))))
 
 (defn- tile-origins
   "Top-left coords at which to stamp a `cw`×`ch` clip so it tiles across the
@@ -366,9 +380,14 @@
                 (let [crs (map #(let [{:keys [ci ri]} (addr/parse %)] [ci ri]) cells)
                       tc0 (apply min (map first crs))  tr0 (apply min (map second crs))
                       tc1 (apply max (map first crs))  tr1 (apply max (map second crs))
+                      origins  (tile-origins tc0 tr0 tc1 tr1 (or (:w clip) 1) (or (:h clip) 1))
+                      ;; tiling is clipped to the selection so it can't spill past
+                      ;; it; a SINGLE stamp (block pasted at one target cell) is
+                      ;; left unclipped so the whole block lands.
+                      bounds   (when (next origins) [tc0 tr0 tc1 tr1])
                       affected (atom [])]
-                  (doseq [[tc tr] (tile-origins tc0 tr0 tc1 tr1 (or (:w clip) 1) (or (:h clip) 1))]
-                    (swap! affected into (paste-cells! sh sid clip tc tr)))
+                  (doseq [[tc tr] origins]
+                    (swap! affected into (paste-cells! sh sid clip tc tr bounds)))
                   (when (seq @affected)
                     (sheet/settle! sh) (save-rec! (:room rec) uid)
                     (push-changes! gen sid (:room rec) sh (distinct @affected))))

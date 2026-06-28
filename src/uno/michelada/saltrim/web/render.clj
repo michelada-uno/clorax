@@ -145,7 +145,11 @@
             ;; the #selrange overlay + clipboard read. A plain click still ends up
             ;; setting $sel + mirroring the cell into the bars + posting presence,
             ;; via the sr-select bridge; Shift extends a range, Ctrl/⌘ adds one.
-            :style "position:relative;height:78vh;border:1px solid #ccc;overflow:hidden;"}
+            ;; user-select:none kills the browser's blue text-highlight while
+            ;; drag-selecting cells (mouse events still fire); #editor re-enables it
+            ;; so typing/selecting inside a cell still works.
+            :style (str "position:relative;height:78vh;border:1px solid #ccc;overflow:hidden;"
+                        "user-select:none;-webkit-user-select:none;")}
       (h/raw (meta-html sh r0 c0))
       ;; corner
       [:div {:id "corner"
@@ -694,7 +698,8 @@
                                "white-space:nowrap;background:var(--bg);}"
                                "#editor{position:absolute;width:%dpx;height:%dpx;"
                                "box-sizing:border-box;border:1px solid var(--accent);"
-                               "padding:2px 4px;font:13px monospace;outline:none;z-index:6;}")
+                               "padding:2px 4px;font:13px monospace;outline:none;z-index:6;"
+                               "user-select:text;-webkit-user-select:text;}")
                           dw dh dw dh))
                 ;; selection / editing OVERLAY (#self), server-rendered. Literal %
                 ;; in the gradients -> kept OUT of the format call above.
