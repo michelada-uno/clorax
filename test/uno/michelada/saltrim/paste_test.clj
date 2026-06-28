@@ -2,8 +2,22 @@
   "Clipboard paste tiling: a copied clip fills the whole target SELECTION, not
    just its top-left cell (the bug: Ctrl+V into a range pasted one cell only)."
   (:require [clojure.test :refer [deftest is testing]]
+            [uno.michelada.saltrim.addr :as addr]
             [uno.michelada.saltrim.sheet :as sheet]
             [uno.michelada.saltrim.web.handlers :as h]))
+
+(defn- paste-into!
+  "Mimic handle-paste: tile `clip` across target `sel`, clipped to the selection
+   (unless it's a single stamp). Mutates `s`. (sid absent -> undo records no-op.)"
+  [s clip sel]
+  (let [cells (#'h/selected-cells sel)
+        crs   (map #(let [{:keys [ci ri]} (addr/parse %)] [ci ri]) cells)
+        tc0 (apply min (map first crs)) tr0 (apply min (map second crs))
+        tc1 (apply max (map first crs)) tr1 (apply max (map second crs))
+        origins (#'h/tile-origins tc0 tr0 tc1 tr1 (:w clip) (:h clip))
+        bounds  (when (next origins) [tc0 tr0 tc1 tr1])]
+    (doseq [[tc tr] origins] (#'h/paste-cells! s "no-session" clip tc tr bounds))
+    (sheet/settle! s)))
 
 (deftest tile-origins
   (let [t #'h/tile-origins]
@@ -41,3 +55,50 @@
       (is (= [0 1 1 2 3 5 8 13]
              (mapv #(sheet/value s (str % "1")) ["A" "B" "C" "D" "E" "F" "G" "H"]))
           "the formula filled the range, not just the first cell"))))
+
+(deftest paste-carries-styles
+  ;; the reported follow-up: paste must bring the cell's STYLES, not just value.
+  (let [s (sheet/create-sheet)]
+    (sheet/set-cell! s "A1" "7")
+    (sheet/set-style! s "A1" :bg "cyan")
+    (sheet/set-style! s "A1" :format "0.00")
+    (sheet/settle! s)
+    (let [clip (#'h/capture-clip s "A1:A1")]
+      (is (= {:bg "cyan" :format "0.00"} (:styles (first (:cells clip)))) "styles captured")
+      (paste-into! s clip "A2:A4")
+      (is (= ["cyan" "cyan" "cyan"] (mapv #(sheet/style-value s % :bg) ["A2" "A3" "A4"])) "bg fills")
+      (is (= "0.00" (sheet/style-value s "A4" :format)) "format fills")
+      (is (= 7.0 (double (sheet/value s "A4"))) "value fills too"))))
+
+(deftest paste-clips-to-selection
+  ;; 3-cell column into a 10-cell range: fills EXACTLY the range, no overhang.
+  (let [s (sheet/create-sheet)]
+    (doseq [r (range 1 4)] (sheet/set-cell! s (str "A" r) (str (* 10 r))))
+    (sheet/settle! s)
+    (paste-into! s (#'h/capture-clip s "A1:A3") "C1:C10")
+    (is (= [10 20 30 10 20 30 10 20 30 10]
+           (mapv #(sheet/value s (str "C" %)) (range 1 11))) "C1:C10 filled (last tile clipped)")
+    (is (nil? (sheet/value s "C11")) "no overhang past the selection")
+    (is (nil? (sheet/value s "C12")))))
+
+(deftest square-fills-bigger-square
+  ;; copy a 2x2 block, fill a 4x4 selection — clean tiling, clipped to selection.
+  (let [s (sheet/create-sheet)]
+    (doseq [[a v] [["A1" "1"]["B1" "2"]["A2" "3"]["B2" "4"]]] (sheet/set-cell! s a v))
+    (sheet/settle! s)
+    (paste-into! s (#'h/capture-clip s "A1:B2") "D1:G4")
+    (is (= [[1 2 1 2] [3 4 3 4] [1 2 1 2] [3 4 3 4]]
+           (for [r [1 2 3 4]] (mapv #(sheet/value s (str % r)) ["D" "E" "F" "G"])))
+        "2x2 tiles cleanly across 4x4")
+    (is (nil? (sheet/value s "H1")) "no horizontal overhang")))
+
+(deftest block-pasted-at-single-cell-lands-whole
+  ;; copy a 2x3 block, paste at ONE target cell -> the whole block lands (unclipped).
+  (let [s (sheet/create-sheet)]
+    (doseq [[a v] [["A1" "10"]["A2" "20"]["A3" "30"]["B1" "40"]["B2" "50"]["B3" "60"]]]
+      (sheet/set-cell! s a v))
+    (sheet/settle! s)
+    (paste-into! s (#'h/capture-clip s "A1:B3") "E5:E5")
+    (is (= [[10 40] [20 50] [30 60]]
+           (mapv (fn [r] [(sheet/value s (str "E" r)) (sheet/value s (str "F" r))]) [5 6 7]))
+        "full 2x3 block pasted at the single target cell E5")))
