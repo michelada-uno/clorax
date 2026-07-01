@@ -655,7 +655,7 @@
       [:meta {:property "og:site_name" :content "SaltRim"}]
       [:meta {:property "og:title" :content (str sname " — SaltRim")}]
       [:meta {:property "og:description"
-              :content "A simple-but-powerful Clojure reactive spreadsheet."}]
+              :content "A simple-but-powerful Clojure reactive spreadsheet. Cells are Clojure expressions, collaborative edits and git-like branching are build in."}]
       [:meta {:property "og:url" :content (str (auth/base-url) "/?s=" sname
                                                 (when (not= branch db/MAIN) (str "&b=" branch)))}]
       [:meta {:property "og:image" :content (str (auth/base-url) "/SaltRim-opengraph.png")}]
@@ -870,7 +870,7 @@
        ;; (so it shows the marching-ants self marker and locks it for peers).
        ;; formula bar shares $v with the floating #editor, so the two stay live-
        ;; synced: typing in either updates $v and the other reflects it.
-       [:input {:id "fbar" :class "tool mono" :data-bind:v "" :placeholder "value or =formula"
+       [:input {:id "fbar" :class "tool mono" :data-bind:v "" :placeholder "value or =formula like =(+ $A1 $B2 42) or =(sum $A1:A10) - Enter to apply"
                 :data-on:focus "$edit=true, @post('/presence')"
                 :data-on:keydown "evt.key==='Enter' && ($cell=$sel, @post('/cell'))"
                 :data-on:blur "$cell=$sel, @post('/cell'), $edit=false, @post('/presence')"
@@ -891,7 +891,7 @@
                  :title "style / format property of the selected cell"}
         (for [p (concat (keys style-css) value-props meta-props)] [:option {:value (name p)} (name p)])]
        [:input {:id "stylesrcbox" :class "tool mono" :data-bind:stylesrc ""
-                :placeholder "color / mask / =formula (use $val) — Enter to apply"
+                :placeholder "prop value or =formula (use $val for current cell value) like =(if (> $val 100) \"tomato\" \"white\")) — Enter to apply"
                 :data-on:keydown "evt.key==='Enter' && ($cell=$sel, @post('/style'))"
                 :style "flex:1;"}]
        [:button {:class "btn" :title "big editor" :data-on:click "$big=$stylesrc, $bigwhat='style', $bigedit=true"} "⤢"]
@@ -1304,7 +1304,7 @@
         [:meta {:property "og:site_name" :content "SaltRim"}]
         [:meta {:property "og:title" :content "SaltRim — sign in"}]
         [:meta {:property "og:description"
-                :content "A simple-but-powerful Clojure reactive spreadsheet."}]
+                :content "A simple-but-powerful Clojure reactive spreadsheet. Cells are Clojure expressions, collaborative edits and git-like branching are build in."}]
         [:meta {:property "og:url" :content (auth/base-url)}]
         [:meta {:property "og:image" :content (str (auth/base-url) "/SaltRim-opengraph.png")}]
         [:meta {:name "twitter:card" :content "summary"}]]
