@@ -658,7 +658,7 @@
               :content "A simple-but-powerful Clojure reactive spreadsheet."}]
       [:meta {:property "og:url" :content (str (auth/base-url) "/?s=" sname
                                                 (when (not= branch db/MAIN) (str "&b=" branch)))}]
-      [:meta {:property "og:image" :content (str (auth/base-url) "/SaltRim.png")}]
+      [:meta {:property "og:image" :content (str (auth/base-url) "/SaltRim-opengraph.png")}]
       [:meta {:name "twitter:card" :content "summary"}]
       ;; Cells are display <div class="cell"> (not inputs); the floating editor
       ;; is the single #editor input. Both are absolutely positioned (cells by
@@ -1306,7 +1306,7 @@
         [:meta {:property "og:description"
                 :content "A simple-but-powerful Clojure reactive spreadsheet."}]
         [:meta {:property "og:url" :content (auth/base-url)}]
-        [:meta {:property "og:image" :content (str (auth/base-url) "/SaltRim.png")}]
+        [:meta {:property "og:image" :content (str (auth/base-url) "/SaltRim-opengraph.png")}]
         [:meta {:name "twitter:card" :content "summary"}]]
        ;; explicit light bg so an OS dark theme can't black out the page; the
        ;; centered column lives in an inner wrapper.
