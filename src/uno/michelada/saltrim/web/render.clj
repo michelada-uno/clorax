@@ -649,8 +649,17 @@
     [:html
      [:head
       [:meta {:charset "utf-8"}]
-      [:title "SaltRim"]
+      [:title (str sname " — SaltRim")]
       [:link {:rel "icon" :type "image/png" :href "/favicon.png"}]
+      [:meta {:property "og:type" :content "website"}]
+      [:meta {:property "og:site_name" :content "SaltRim"}]
+      [:meta {:property "og:title" :content (str sname " — SaltRim")}]
+      [:meta {:property "og:description"
+              :content "A simple-but-powerful Clojure reactive spreadsheet."}]
+      [:meta {:property "og:url" :content (str (auth/base-url) "/?s=" sname
+                                                (when (not= branch db/MAIN) (str "&b=" branch)))}]
+      [:meta {:property "og:image" :content (str (auth/base-url) "/SaltRim.png")}]
+      [:meta {:name "twitter:card" :content "summary"}]
       ;; Cells are display <div class="cell"> (not inputs); the floating editor
       ;; is the single #editor input. Both are absolutely positioned (cells by
       ;; their inline left/top, #editor by app.js) — without this the left/top
